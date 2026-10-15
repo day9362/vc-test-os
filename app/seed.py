@@ -116,6 +116,24 @@ def _machines(session, now: int) -> None:
 def _curve(session, machine_id: str, slot: int, hvp: bool) -> None:
     run_id = f"R-{machine_id}-{slot}-seed"
     power = 3.5 if hvp else 2.5
+    rc = 5.18 if hvp else 4.77
+    session.add(RunOrm(
+        run_id=run_id,
+        machine_id=machine_id,
+        slot_index=slot,
+        serial_number=f"SN-{machine_id}-{slot:02d}",
+        plan_id="PLAN-3f2c71d0" if hvp else "PLAN-592bbc46",
+        plan_version=3 if hvp else 2,
+        status="RUNNING",
+        passed=None,
+        fail_items=[],
+        keep_result=True,
+        rc=rc,
+        dt01=2.9 if hvp else 2.07,
+        batch_id="B-tb172-seed",
+        ended_at=_now(),
+        result={"duration_s": 180, "deltas": {"Rc": rc, "Temp_T0-T1": 2.9 if hvp else 2.07}},
+    ))
     for step in range(0, 61, 3):
         k = 1 - math.exp(-step / 28)
         ta = 24.2
