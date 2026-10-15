@@ -13,6 +13,7 @@ from app.api.overview.rc_bias import router as rc_bias_router
 from app.api.overview.pipeline import router as pipeline_router
 from app.api.overview.alarms import router as alarms_router
 from app.api.overview.ack_alarm import router as ack_alarm_router
+from app.api.overview.unack_alarm import router as unack_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -28,3 +29,4 @@ api_router.include_router(rc_bias_router)
 api_router.include_router(pipeline_router)
 api_router.include_router(alarms_router)
 api_router.include_router(ack_alarm_router)
+api_router.include_router(unack_router)
