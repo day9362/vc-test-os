@@ -12,6 +12,7 @@ from app.core.errors import AppError
 from app.core.redis import close_redis
 from app.models.orm.base import Base
 from app.seed import seed
+from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 
 @asynccontextmanager
@@ -19,7 +20,9 @@ async def lifespan(_: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await seed()
+    start_scheduler()
     yield
+    stop_scheduler()
     await close_redis()
     await engine.dispose()
 
