@@ -10,6 +10,7 @@ from app.api.overview.kpi import router as kpi_router
 from app.api.overview.agg5m import router as agg5m_router
 from app.api.overview.anomaly_trend import router as anomaly_router
 from app.api.overview.rc_bias import router as rc_bias_router
+from app.api.overview.pipeline import router as pipeline_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -22,3 +23,4 @@ api_router.include_router(kpi_router)
 api_router.include_router(agg5m_router)
 api_router.include_router(anomaly_router)
 api_router.include_router(rc_bias_router)
+api_router.include_router(pipeline_router)
