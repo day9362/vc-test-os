@@ -16,6 +16,7 @@ from app.api.overview.ack_alarm import router as ack_alarm_router
 from app.api.overview.unack_alarm import router as unack_router
 from app.api.overview.ack_all import router as ack_all_router
 from app.api.overview.attribution import router as attribution_router
+from app.api.overview.attribution_rerun import router as attribution_rerun_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -34,3 +35,4 @@ api_router.include_router(ack_alarm_router)
 api_router.include_router(unack_router)
 api_router.include_router(ack_all_router)
 api_router.include_router(attribution_router)
+api_router.include_router(attribution_rerun_router)
