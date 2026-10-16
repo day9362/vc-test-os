@@ -3,6 +3,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.database import SessionLocal
+from app.service.realtime.watch import watch_changes
 from app.tasks.sync import rollup_agg, scan_alarms, sync_cluster
 
 log = logging.getLogger(__name__)
@@ -31,12 +32,17 @@ async def _agg_job() -> None:
     await _run(rollup_agg)
 
 
+async def _watch_job() -> None:
+    await _run(watch_changes)
+
+
 def start_scheduler() -> None:
     if scheduler.running:
         return
     scheduler.add_job(_sync_job, "interval", seconds=2, id="sync_cluster", replace_existing=True)
     scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", replace_existing=True)
     scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", replace_existing=True)
+    scheduler.add_job(_watch_job, "interval", seconds=1, id="realtime_watch", replace_existing=True)
     scheduler.start()
 
 
