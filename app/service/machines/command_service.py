@@ -64,6 +64,23 @@ class MachineCommandService:
         machine.last_sync_at = now_ms()
         return await self._finish(machine, slots, user, idempotency_key, "machine.maintenance", {"on": on})
 
+    async def reset(self, machine_id: str, user: UserEntity, idempotency_key: str | None) -> MachineActionOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return MachineActionOut.model_validate(cached)
+        machine, slots = await self._require_online(machine_id)
+        await post_cluster(f"/machines/{machine_id}/reset", None)
+        if machine.status == "FAULT":
+            machine.status = "READY"
+            machine.alarm = ""
+        for slot in slots:
+            if slot.phase == "ERROR":
+                slot.phase = "IDLE"
+                slot.last_error = ""
+                slot.progress = 0
+        machine.last_sync_at = now_ms()
+        return await self._finish(machine, slots, user, idempotency_key, "machine.reset", {})
+
     async def _require_online(self, machine_id: str) -> tuple[MachineOrm, list[SlotOrm]]:
         found = await self.machines.get_with_slots(machine_id)
         if found is None:
