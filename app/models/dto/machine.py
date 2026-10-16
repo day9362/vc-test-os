@@ -63,6 +63,12 @@ class CurvePointOut(BaseModel):
     power_w: float
 
 
+class MachineActionOut(BaseModel):
+    audit_id: str
+    machine_id: str
+    status: str
+
+
 class SlotCurveOut(BaseModel):
     run_id: str | None
     plan_id: str | None
