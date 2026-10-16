@@ -20,6 +20,7 @@ from app.api.overview.attribution_rerun import router as attribution_rerun_route
 from app.api.realtime.ws import router as ws_router
 from app.api.machines.power_on import router as power_on_router
 from app.api.machines.power_off import router as power_off_router
+from app.api.machines.maintenance import router as maintenance_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -42,3 +43,4 @@ api_router.include_router(attribution_rerun_router)
 api_router.include_router(ws_router)
 api_router.include_router(power_on_router)
 api_router.include_router(power_off_router)
+api_router.include_router(maintenance_router)

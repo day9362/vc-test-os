@@ -69,6 +69,10 @@ class MachineActionOut(BaseModel):
     status: str
 
 
+class MaintenanceIn(BaseModel):
+    on: bool
+
+
 class SlotCurveOut(BaseModel):
     run_id: str | None
     plan_id: str | None

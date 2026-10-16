@@ -48,6 +48,22 @@ class MachineCommandService:
         machine.last_sync_at = now_ms()
         return await self._finish(machine, slots, user, idempotency_key, "machine.power_off", {})
 
+    async def maintenance(self, machine_id: str, on: bool, user: UserEntity, idempotency_key: str | None) -> MachineActionOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return MachineActionOut.model_validate(cached)
+        machine, slots = await self._require_online(machine_id)
+        if not on and machine.status != "MAINTENANCE":
+            raise AppError(409, "CONFLICT", f"{machine_id} 不在维修状态")
+        await post_cluster(f"/machines/{machine_id}/maintenance", {"on": on})
+        if on:
+            await self._abort_sampling(slots)
+            machine.status = "MAINTENANCE"
+        else:
+            machine.status = "READY"
+        machine.last_sync_at = now_ms()
+        return await self._finish(machine, slots, user, idempotency_key, "machine.maintenance", {"on": on})
+
     async def _require_online(self, machine_id: str) -> tuple[MachineOrm, list[SlotOrm]]:
         found = await self.machines.get_with_slots(machine_id)
         if found is None:
