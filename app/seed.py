@@ -8,6 +8,7 @@ from app.core.security import hash_password
 from app.models.entity.user import UserEntity
 from app.models.orm.alarm import AlarmOrm, AttributionOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
+from app.models.orm.plan import PlanDispatchOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
 from app.models.orm.user import UserOrm
 from app.repo.user_repo import UserRepo
@@ -53,6 +54,7 @@ async def seed() -> None:
         await UserRepo(session).add(UserEntity("limingyuan", "limingyuan", "李明远", "test", hash_password("changeme")))
         now = _now()
         _machines(session, now)
+        _plan_history(session, now)
         _runs_and_agg(session, now)
         _alarms(session, now)
         await session.commit()
@@ -140,6 +142,26 @@ def _curve(session, machine_id: str, slot: int, hvp: bool) -> None:
         t1 = ta + (5.18 if hvp else 4.77) * power * k
         t0 = t1 + (2.9 if hvp else 2.07) * (0.4 + 0.6 * k)
         session.add(RunSampleOrm(run_id=run_id, t_s=step, t0=round(t0, 3), t1=round(t1, 3), ta=ta, power_w=power))
+
+
+def _plan_history(session, now: int) -> None:
+    hour = 3_600_000
+    for index in range(1, 13):
+        machine_id = f"M{index:02d}"
+        hvp = index in (9, 10)
+        plan_id = "PLAN-3f2c71d0" if hvp else "PLAN-592bbc46"
+        name = "HVP 3.5W 标准测试" if hvp else "45度测3分钟"
+        current = 3 if hvp else 2
+        session.add(PlanDispatchOrm(
+            machine_id=machine_id, plan_id=plan_id, name=name, version=current - 1,
+            started_at=now - 6 * 24 * hour, ended_at=now - 30 * hour,
+        ))
+        if index == 8:
+            continue
+        session.add(PlanDispatchOrm(
+            machine_id=machine_id, plan_id=plan_id, name=name, version=current,
+            started_at=now - int(5.2 * hour), ended_at=None,
+        ))
 
 
 def _runs_and_agg(session, now: int) -> None:
