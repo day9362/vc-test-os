@@ -37,6 +37,17 @@ class MachineCommandService:
         machine.last_sync_at = now_ms()
         return await self._finish(machine, slots, user, idempotency_key, "machine.power_on", {})
 
+    async def power_off(self, machine_id: str, user: UserEntity, idempotency_key: str | None) -> MachineActionOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return MachineActionOut.model_validate(cached)
+        machine, slots = await self._require_online(machine_id)
+        await post_cluster(f"/machines/{machine_id}/power-off", None)
+        await self._abort_sampling(slots)
+        machine.status = "OFFLINE"
+        machine.last_sync_at = now_ms()
+        return await self._finish(machine, slots, user, idempotency_key, "machine.power_off", {})
+
     async def _require_online(self, machine_id: str) -> tuple[MachineOrm, list[SlotOrm]]:
         found = await self.machines.get_with_slots(machine_id)
         if found is None:
