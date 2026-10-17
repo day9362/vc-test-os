@@ -31,3 +31,14 @@ class CompensationIn(BaseModel):
 class CompensationWriteOut(BaseModel):
     audit_id: str
     items: list[CompChannelOut]
+
+
+class SuggestionItemOut(BaseModel):
+    channel: str
+    value: float
+    reason: str
+
+
+class SuggestionOut(BaseModel):
+    items: list[SuggestionItemOut]
+    basis_at: int
