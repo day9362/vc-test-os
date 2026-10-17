@@ -6,10 +6,11 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.models.dto.settings import PlatformSettingsOut, TestConnectionIn, TestConnectionOut
+from app.models.dto.settings import JobStatusItemOut, JobStatusOut, PlatformSettingsOut, TestConnectionIn, TestConnectionOut
 from app.repo.settings_repo import SettingsRepo
 from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
+from app.tasks.job_runs import snapshot
 from app.tasks.scheduler import apply_job_intervals
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,18 @@ class SettingsService:
             reachable=reachable,
             server_version=_server_version(response, payload_json),
         )
+
+    @staticmethod
+    def job_status() -> JobStatusOut:
+        seen = snapshot()
+        items = []
+        for key in JOB_KEYS:
+            row = seen.get(key)
+            if row is None:
+                items.append(JobStatusItemOut(key=key, last_at=None, elapsed_ms=None, failed=None))
+            else:
+                items.append(JobStatusItemOut(key=key, last_at=row["last_at"], elapsed_ms=row["elapsed_ms"], failed=row["failed"]))
+        return JobStatusOut(items=items)
 
     def _validate(self, incoming: dict) -> None:
         issues: list[dict] = []
