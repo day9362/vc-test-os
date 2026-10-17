@@ -25,6 +25,16 @@ class PlanService:
         items.sort(key=lambda item: (not item.meta.draft, -item.meta.updated_at))
         return items
 
+    async def get_plan(self, plan_id: str, version: int | None) -> PlanItemOut:
+        rows = await self._require_group(plan_id)
+        current, versions = self._current(rows)
+        if version is None:
+            return item_out(entity_of(current, versions))
+        row = next((item for item in rows if item.version == version and not item.draft), None)
+        if row is None:
+            raise AppError(404, "NOT_FOUND", f"方案 {plan_id} 没有 v{version}")
+        return item_out(entity_of(row, versions))
+
     def _current(self, rows: list[TestPlanOrm]) -> tuple[TestPlanOrm, list[int]]:
         published = [row for row in rows if not row.draft]
         if published:
