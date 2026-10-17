@@ -37,6 +37,7 @@ from app.api.runs.samples import router as runs_samples_router
 from app.api.runs.export import router as runs_export_router
 from app.api.reports.data import router as reports_data_router
 from app.api.reports.export import router as reports_export_router
+from app.api.compensation.channel_bias import router as channel_bias_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -76,3 +77,4 @@ api_router.include_router(runs_detail_router)
 api_router.include_router(runs_export_router)
 api_router.include_router(reports_data_router)
 api_router.include_router(reports_export_router)
+api_router.include_router(channel_bias_router)
