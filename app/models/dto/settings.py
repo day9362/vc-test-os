@@ -56,3 +56,17 @@ class PlatformSettingsOut(BaseModel):
     storage: StorageSettingsOut
     ai: AiSettingsOut
     rules: RuleSettingsOut
+
+
+class TestConnectionIn(BaseModel):
+    source: str
+    base_url: str
+    token: str = ""
+
+
+class TestConnectionOut(BaseModel):
+    ok: bool
+    latency_ms: int
+    machines: int
+    reachable: int
+    server_version: str
