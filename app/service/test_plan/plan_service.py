@@ -8,13 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
 from app.core.errors import AppError
-from app.models.dto.test_plan import DeleteOut, DraftOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
+from app.models.dto.test_plan import DeleteOut, DraftOut, FromTextOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
 from app.models.entity.user import UserEntity
+from app.models.orm.alarm import AiCallOrm
 from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.test_plan_repo import TestPlanRepo
 from app.service.test_plan.cluster import publish_cluster
+from app.service.test_plan.from_text import draft_from_text
 from app.service.test_plan.mapping import entity_of, item_out
 from app.service.test_plan.validate import fleet_bounds, validate_plan
 
@@ -115,6 +117,32 @@ class PlanService:
         await self.plans.delete(row)
         audit_id = self.audit.record(user.user_id, "plan.draft_delete", "", {"plan_id": plan_id}, {"deleted": True})
         result = DeleteOut(audit_id=audit_id)
+        await self.session.commit()
+        await self._store(idempotency_key, result)
+        return result
+
+    async def draft_from_text(self, text: str, user: UserEntity, idempotency_key: str | None) -> FromTextOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return FromTextOut.model_validate(cached)
+        if not text.strip():
+            raise AppError(400, "BAD_REQUEST", "描述不能为空")
+        body, notes, usage = draft_from_text(text)
+        created = await self.create_draft(body, user, None, source="agent")
+        self.session.add(AiCallOrm(
+            id=f"call-{uuid4().hex[:8]}",
+            time=now_ms(),
+            module="agent.plan",
+            user=user.name,
+            model="rule",
+            input_tokens=usage.input,
+            output_tokens=usage.output,
+            latency_ms=1,
+            ok=True,
+            ref={"plan_id": created.plan.plan_id},
+        ))
+        audit_id = self.audit.record(user.user_id, "plan.from_text", "", {"text": text[:80]}, {"plan_id": created.plan.plan_id})
+        result = FromTextOut(plan=created.plan, meta=created.meta, notes=notes, usage=usage, audit_id=audit_id)
         await self.session.commit()
         await self._store(idempotency_key, result)
         return result
