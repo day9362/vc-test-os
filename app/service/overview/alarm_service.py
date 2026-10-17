@@ -84,14 +84,19 @@ class AlarmService:
             await self.session.commit()
         return attribution_out(row)
 
-    async def rerun_attribution(self, alarm_id: str, user: UserEntity) -> AttributionOut:
+    async def rerun_attribution(self, alarm_id: str, user: UserEntity, idempotency_key: str | None) -> AttributionOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return AttributionOut.model_validate(cached)
         from app.service.overview.attribution import build_attribution
 
         alarm = await self._require(alarm_id)
         row = await build_attribution(self.session, alarm, user.name)
         self.audit.record(user.user_id, "alarm.attribution", alarm.machine_id, {"alarm_id": alarm_id}, {"status": row.status})
+        body = attribution_out(row)
         await self.session.commit()
-        return attribution_out(row)
+        await self._store(idempotency_key, body)
+        return body
 
     async def _require(self, alarm_id: str):
         row = await self.alarms.get(alarm_id)
