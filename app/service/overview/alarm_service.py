@@ -5,7 +5,6 @@ from app.core.clock import now_ms
 from app.core.errors import AppError
 from app.models.dto.alarm import AckAllOut, AlarmActionOut, AlarmOut, AlarmPageOut, AttributionOut
 from app.models.entity.user import UserEntity
-from app.models.orm.alarm import AttributionOrm
 from app.repo.alarm_repo import AlarmRepo
 from app.repo.audit_repo import AuditRepo
 from app.service.overview.hub import hub
@@ -76,11 +75,12 @@ class AlarmService:
         return body
 
     async def attribution(self, alarm_id: str) -> AttributionOut:
-        await self._require(alarm_id)
+        alarm = await self._require(alarm_id)
         row = await self.alarms.attribution(alarm_id)
         if row is None:
-            row = AttributionOrm(alarm_id=alarm_id, status="pending", summary="", evidence=[], suggestion="", model="", created_at=now_ms())
-            self.session.add(row)
+            from app.service.overview.attribution import build_attribution
+
+            row = await build_attribution(self.session, alarm, "系统")
             await self.session.commit()
         return attribution_out(row)
 
