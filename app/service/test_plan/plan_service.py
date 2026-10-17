@@ -2,13 +2,16 @@ import json
 from collections import defaultdict
 
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.models.dto.test_plan import PlanItemOut
+from app.models.dto.test_plan import PlanBody, PlanItemOut, ValidateOut
+from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.test_plan_repo import TestPlanRepo
 from app.service.test_plan.mapping import entity_of, item_out
+from app.service.test_plan.validate import fleet_bounds, validate_plan
 
 
 class PlanService:
@@ -34,6 +37,10 @@ class PlanService:
         if row is None:
             raise AppError(404, "NOT_FOUND", f"方案 {plan_id} 没有 v{version}")
         return item_out(entity_of(row, versions))
+
+    async def validate(self, body: PlanBody) -> ValidateOut:
+        capabilities = list((await self.session.execute(select(MachineOrm.capability))).scalars().all())
+        return validate_plan(body, fleet_bounds([item for item in capabilities if isinstance(item, dict)]))
 
     def _current(self, rows: list[TestPlanOrm]) -> tuple[TestPlanOrm, list[int]]:
         published = [row for row in rows if not row.draft]

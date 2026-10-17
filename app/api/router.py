@@ -19,6 +19,7 @@ from app.api.overview.attribution import router as attribution_router
 from app.api.overview.attribution_rerun import router as attribution_rerun_router
 from app.api.overview.ws import router as ws_router
 from app.api.test_plan.list_plans import router as list_plans_router
+from app.api.test_plan.validate_plan import router as validate_plan_router
 from app.api.test_plan.plan_detail import router as plan_detail_router
 
 api_router = APIRouter()
@@ -41,4 +42,5 @@ api_router.include_router(attribution_router)
 api_router.include_router(attribution_rerun_router)
 api_router.include_router(ws_router)
 api_router.include_router(list_plans_router)
+api_router.include_router(validate_plan_router)
 api_router.include_router(plan_detail_router)
