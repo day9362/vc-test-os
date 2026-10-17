@@ -1,3 +1,6 @@
+import csv
+import io
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
@@ -73,3 +76,30 @@ class RunService:
             ],
             deltas=deltas,
         )
+
+    async def export_csv(self, batch_id: str | None, start: int | None, end: int | None) -> str:
+        rows = await self.runs.list_for_export(batch_id, start, end)
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "run_id", "machine_id", "slot_index", "serial_number", "plan_id", "plan_version",
+            "status", "passed", "fail_items", "keep_result", "rc", "dt01", "batch_id", "ended_at",
+        ])
+        for row in rows:
+            writer.writerow([
+                row.run_id,
+                row.machine_id,
+                row.slot_index,
+                row.serial_number or "",
+                row.plan_id,
+                row.plan_version,
+                row.status,
+                "" if row.passed is None else str(row.passed).lower(),
+                "|".join(row.fail_items or []),
+                str(row.keep_result).lower(),
+                "" if row.rc is None else row.rc,
+                "" if row.dt01 is None else row.dt01,
+                row.batch_id or "",
+                row.ended_at,
+            ])
+        return buffer.getvalue()

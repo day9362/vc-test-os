@@ -21,6 +21,7 @@ from app.api.overview.ws import router as ws_router
 from app.api.runs.list import router as runs_list_router
 from app.api.runs.detail import router as runs_detail_router
 from app.api.runs.samples import router as runs_samples_router
+from app.api.runs.export import router as runs_export_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -44,3 +45,4 @@ api_router.include_router(ws_router)
 api_router.include_router(runs_list_router)
 api_router.include_router(runs_samples_router)
 api_router.include_router(runs_detail_router)
+api_router.include_router(runs_export_router)
