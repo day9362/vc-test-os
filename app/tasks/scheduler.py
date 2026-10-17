@@ -2,25 +2,32 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.core.clock import now_ms
 from app.core.database import SessionLocal
+from app.tasks.job_runs import record
 from app.tasks.sync import rollup_agg, scan_alarms, sync_cluster
 
 log = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
-async def _run(job) -> None:
+async def _run(job, key: str | None = None) -> None:
+    started = now_ms()
+    failed = False
     async with SessionLocal() as session:
         try:
             await job(session)
             await session.commit()
         except Exception:
             await session.rollback()
+            failed = True
             log.exception("scheduled job failed: %s", getattr(job, "__name__", job))
+    if key:
+        record(key, now_ms() - started, failed)
 
 
 async def _sync_job() -> None:
-    await _run(sync_cluster)
+    await _run(sync_cluster, "fleet")
 
 
 async def _alarm_job() -> None:
@@ -28,7 +35,7 @@ async def _alarm_job() -> None:
 
 
 async def _agg_job() -> None:
-    await _run(rollup_agg)
+    await _run(rollup_agg, "agg")
 
 
 def start_scheduler() -> None:
@@ -38,6 +45,28 @@ def start_scheduler() -> None:
     scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", replace_existing=True)
     scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", replace_existing=True)
     scheduler.start()
+
+
+def apply_job_intervals(payload: dict) -> None:
+    if not scheduler.running:
+        return
+    jobs = {item.get("key"): item for item in payload.get("jobs") or []}
+    fleet = jobs.get("fleet") or {}
+    agg = jobs.get("agg") or {}
+    _replace("sync_cluster", _sync_job, int(fleet.get("interval_s") or 2), bool(fleet.get("enabled", True)))
+    _replace("rollup_agg", _agg_job, int(agg.get("interval_s") or 60), bool(agg.get("enabled", True)))
+
+
+def _replace(job_id: str, func, seconds: int, enabled: bool) -> None:
+    from apscheduler.jobstores.base import JobLookupError
+
+    if not enabled:
+        try:
+            scheduler.remove_job(job_id)
+        except JobLookupError:
+            pass
+        return
+    scheduler.add_job(func, "interval", seconds=max(int(seconds), 1), id=job_id, replace_existing=True)
 
 
 def stop_scheduler() -> None:
