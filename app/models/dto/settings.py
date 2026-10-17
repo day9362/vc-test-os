@@ -70,3 +70,14 @@ class TestConnectionOut(BaseModel):
     machines: int
     reachable: int
     server_version: str
+
+
+class JobStatusItemOut(BaseModel):
+    key: str
+    last_at: int | None = None
+    elapsed_ms: int | None = None
+    failed: bool | None = None
+
+
+class JobStatusOut(BaseModel):
+    items: list[JobStatusItemOut]
