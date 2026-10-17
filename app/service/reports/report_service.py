@@ -1,6 +1,7 @@
 from collections import defaultdict
 from math import sqrt
 
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
@@ -12,18 +13,27 @@ from app.models.dto.report import (
     MachineYieldOut,
     RcHistogramOut,
     ReportDataOut,
+    ReportExportIn,
+    ReportExportOut,
     ReportSummaryOut,
 )
+from app.models.entity.user import UserEntity
 from app.models.orm.run import RunOrm
+from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
+from app.service.reports.pdf import render_report_pdf
+from app.service.reports.store import save_report_pdf
 
 USL_T01 = 2.8
 BINS = 28
 
 
 class ReportService:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, redis: Redis | None = None):
+        self.session = session
         self.runs = RunRepo(session)
+        self.audit = AuditRepo(session)
+        self.redis = redis
 
     async def data(self, batch_ids: str) -> ReportDataOut:
         ids = [item.strip() for item in (batch_ids or "").split(",") if item.strip()]
@@ -75,6 +85,44 @@ class ReportService:
             delta_profile=_deltas({batch_id: grouped.get(batch_id, []) for batch_id in ids if grouped.get(batch_id)}, len(active) == 1),
             compare=[BatchCompareOut(batch_id=item.batch_id, yield_rate=round(100 * item.passed / item.tested, 2), rc_mean=item.rc_mean) for item in active],
         )
+
+    async def export(self, body: ReportExportIn, user: UserEntity, idempotency_key: str | None) -> ReportExportOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return ReportExportOut.model_validate(cached)
+        ids = [item.strip() for item in body.batch_ids if item and item.strip()]
+        if not ids:
+            raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
+        fmt = (body.format or "pdf").strip().lower()
+        if fmt != "pdf":
+            raise AppError(422, "VALIDATION_ERROR", "目前仅支持 format=pdf")
+        data = await self.data(",".join(ids))
+        skipped = [item for item in body.figure_ids if item]
+        figure_note = None
+        if skipped:
+            figure_note = f"图表尚未接入导出（8.3 未实现），已忽略 figure_ids: {', '.join(skipped)}"
+        pdf = render_report_pdf(data, figure_note)
+        url = save_report_pdf(pdf)
+        self.audit.record(user.user_id, "report.export", "", {"batch_ids": ids, "figure_ids": skipped, "format": fmt}, {"url": url})
+        out = ReportExportOut(url=url)
+        await self.session.commit()
+        await self._store(idempotency_key, out)
+        return out
+
+    async def _cached(self, key: str | None):
+        if not key or self.redis is None:
+            return None
+        raw = await self.redis.get(f"idem:{key}")
+        if not raw:
+            return None
+        import json
+        return json.loads(raw)
+
+    async def _store(self, key: str | None, body: ReportExportOut) -> None:
+        if not key or self.redis is None:
+            return
+        import json
+        await self.redis.set(f"idem:{key}", json.dumps(body.model_dump()), ex=600)
 
 
 def _empty(batches: list[BatchStatOut]) -> ReportDataOut:
