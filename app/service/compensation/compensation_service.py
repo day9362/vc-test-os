@@ -11,6 +11,8 @@ from app.models.dto.compensation import (
     CompensationIn,
     CompensationOut,
     CompensationWriteOut,
+    SuggestionItemOut,
+    SuggestionOut,
 )
 from app.models.entity.user import UserEntity
 from app.repo.audit_repo import AuditRepo
@@ -64,6 +66,19 @@ class CompensationService:
         await self.session.commit()
         await self._store(idempotency_key, out)
         return out
+
+    async def suggestion(self, machine_id: str) -> SuggestionOut:
+        bias = await self.channel_bias(machine_id)
+        items = []
+        for item in bias.items:
+            if abs(item.value) < bias.threshold_c:
+                continue
+            items.append(SuggestionItemOut(
+                channel=item.channel,
+                value=round(-item.value, 3),
+                reason=f"标准样品复测偏差 {item.value:+.3f} ℃",
+            ))
+        return SuggestionOut(items=items, basis_at=bias.measured_at)
 
     def _items(self, payload: dict | list) -> list[CompChannelOut]:
         raw = payload if isinstance(payload, list) else payload.get("channels") or payload.get("items") or payload.get("compensation") or []
