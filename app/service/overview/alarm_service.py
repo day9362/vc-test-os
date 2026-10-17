@@ -8,6 +8,7 @@ from app.models.entity.user import UserEntity
 from app.models.orm.alarm import AttributionOrm
 from app.repo.alarm_repo import AlarmRepo
 from app.repo.audit_repo import AuditRepo
+from app.service.overview.hub import hub
 from app.service.overview.mapping import alarm_entity, alarm_out, attribution_out
 
 
@@ -69,6 +70,8 @@ class AlarmService:
         audit_id = self.audit.record(user.user_id, "alarm.ack_all", "", {"count": len(rows)}, {"updated": len(rows)})
         body = AckAllOut(updated=len(rows), audit_id=audit_id)
         await self.session.commit()
+        for row in rows:
+            await hub.publish("alarms", alarm_out(alarm_entity(row)).model_dump())
         await self._store(idempotency_key, body)
         return body
 
