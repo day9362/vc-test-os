@@ -107,6 +107,12 @@ class RunRepo:
     async def get(self, run_id: str) -> RunOrm | None:
         return await self.session.get(RunOrm, run_id)
 
+    async def list_for_export(self, batch_id: str | None, start: int | None, end: int | None) -> list[RunOrm]:
+        stmt = self._filtered(None, batch_id, None, False, None, None, start, end)
+        return list(
+            (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc()))).scalars().all()
+        )
+
     async def samples(self, run_id: str, since: float | None) -> list[RunSampleOrm]:
         stmt = select(RunSampleOrm).where(RunSampleOrm.run_id == run_id)
         if since is not None:
