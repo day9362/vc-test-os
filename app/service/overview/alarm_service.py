@@ -21,6 +21,8 @@ class AlarmService:
     async def list_alarms(self, acked: bool | None, machine_id: str | None, level: str | None, cursor: str | None, limit: int) -> AlarmPageOut:
         if limit < 1 or limit > 500:
             raise AppError(400, "BAD_REQUEST", "limit 需要在 1 到 500 之间")
+        if level is not None and level not in {"critical", "major", "minor"}:
+            raise AppError(400, "BAD_REQUEST", "level 只能是 critical、major 或 minor")
         if cursor and ":" not in cursor:
             raise AppError(400, "BAD_REQUEST", "cursor 格式不正确")
         rows, next_cursor = await self.alarms.page(acked, machine_id, level, cursor, limit)
