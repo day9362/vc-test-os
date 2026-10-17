@@ -12,3 +12,12 @@ class ChannelBiasOut(BaseModel):
     samples: int
     threshold_c: float
     items: list[ChannelBiasItemOut]
+
+
+class CompChannelOut(BaseModel):
+    channel: str
+    value: float
+
+
+class CompensationOut(BaseModel):
+    items: list[CompChannelOut]
