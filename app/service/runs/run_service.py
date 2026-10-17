@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.models.dto.run import RunDetailOut, RunPageOut
+from app.models.dto.run import RunDetailOut, RunPageOut, RunSamplesOut
 from app.repo.run_repo import RunRepo
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
 
@@ -48,3 +48,28 @@ class RunService:
         if row is None:
             raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
         return run_detail_out(run_entity(row))
+
+    async def get_samples(self, run_id: str, since: float | None) -> RunSamplesOut:
+        row = await self.runs.get(run_id)
+        if row is None:
+            raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
+        samples = await self.runs.samples(run_id, since)
+        deltas = {
+            key: float(value)
+            for key, value in (row.result or {}).get("deltas", {}).items()
+            if isinstance(value, (int, float))
+        }
+        duration = (row.result or {}).get("duration_s")
+        if duration is None and samples:
+            duration = int(samples[-1].t_s)
+        return RunSamplesOut(
+            run_id=row.run_id,
+            plan_id=row.plan_id,
+            plan_version=row.plan_version,
+            duration_s=duration,
+            points=[
+                {"t_s": item.t_s, "T0": item.t0, "T1": item.t1, "Ta": item.ta, "power_w": item.power_w}
+                for item in samples
+            ],
+            deltas=deltas,
+        )

@@ -25,3 +25,20 @@ class RunDetailOut(RunOut):
 class RunPageOut(BaseModel):
     items: list[RunOut]
     next_cursor: str | None
+
+
+class RunSamplePointOut(BaseModel):
+    t_s: float
+    T0: float
+    T1: float
+    Ta: float
+    power_w: float
+
+
+class RunSamplesOut(BaseModel):
+    run_id: str
+    plan_id: str
+    plan_version: int
+    duration_s: int | None
+    points: list[RunSamplePointOut]
+    deltas: dict[str, float] = Field(default_factory=dict)
