@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.orm.run import RunOrm, RunSampleOrm
@@ -49,3 +49,35 @@ class RunRepo:
             stmt = stmt.where(RunSampleOrm.t_s > since)
         stmt = stmt.order_by(RunSampleOrm.t_s)
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def search_runs(self, q: str, limit: int) -> list[RunOrm]:
+        pattern = f"%{q}%"
+        stmt = (
+            select(RunOrm)
+            .where(or_(RunOrm.run_id.ilike(pattern), RunOrm.serial_number.ilike(pattern), RunOrm.batch_id.ilike(pattern)))
+            .order_by(RunOrm.ended_at.desc())
+            .limit(limit)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def search_batches(self, q: str, limit: int) -> list[str]:
+        pattern = f"%{q}%"
+        stmt = (
+            select(RunOrm.batch_id)
+            .where(RunOrm.batch_id != "", RunOrm.batch_id.ilike(pattern))
+            .distinct()
+            .order_by(RunOrm.batch_id)
+            .limit(limit)
+        )
+        return [row for row in (await self.session.execute(stmt)).scalars().all() if row]
+
+    async def search_plans(self, q: str, limit: int) -> list[str]:
+        pattern = f"%{q}%"
+        stmt = (
+            select(RunOrm.plan_id)
+            .where(RunOrm.plan_id != "", RunOrm.plan_id.ilike(pattern))
+            .distinct()
+            .order_by(RunOrm.plan_id)
+            .limit(limit)
+        )
+        return [row for row in (await self.session.execute(stmt)).scalars().all() if row]
