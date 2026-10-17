@@ -6,10 +6,21 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.models.dto.settings import JobStatusItemOut, JobStatusOut, PlatformSettingsOut, TestConnectionIn, TestConnectionOut
+from app.models.dto.settings import (
+    FaultCatalogItemOut,
+    FaultCatalogOut,
+    JobStatusItemOut,
+    JobStatusOut,
+    PlatformSettingsOut,
+    ScenarioListOut,
+    ScenarioOut,
+    TestConnectionIn,
+    TestConnectionOut,
+)
 from app.repo.settings_repo import SettingsRepo
 from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
+from app.service.settings.sim import FAULT_CATALOG, SCENARIOS
 from app.tasks.job_runs import snapshot
 from app.tasks.scheduler import apply_job_intervals
 
@@ -80,6 +91,19 @@ class SettingsService:
             else:
                 items.append(JobStatusItemOut(key=key, last_at=row["last_at"], elapsed_ms=row["elapsed_ms"], failed=row["failed"]))
         return JobStatusOut(items=items)
+
+    async def list_scenarios(self) -> ScenarioListOut:
+        await self._require_sim()
+        return ScenarioListOut(items=[ScenarioOut(**item) for item in SCENARIOS])
+
+    async def list_faults(self) -> FaultCatalogOut:
+        await self._require_sim()
+        return FaultCatalogOut(items=[FaultCatalogItemOut(**item) for item in FAULT_CATALOG])
+
+    async def _require_sim(self) -> None:
+        row = await self.settings.get_or_create()
+        if (row.payload or {}).get("source") != "sim":
+            raise AppError(409, "CONFLICT", "仅仿真数据源可用")
 
     def _validate(self, incoming: dict) -> None:
         issues: list[dict] = []
