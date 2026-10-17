@@ -81,3 +81,22 @@ class JobStatusItemOut(BaseModel):
 
 class JobStatusOut(BaseModel):
     items: list[JobStatusItemOut]
+
+
+class ScenarioOut(BaseModel):
+    name: str
+    text: str
+
+
+class ScenarioListOut(BaseModel):
+    items: list[ScenarioOut]
+
+
+class FaultCatalogItemOut(BaseModel):
+    kind: str
+    layer: str
+    alarms: bool
+
+
+class FaultCatalogOut(BaseModel):
+    items: list[FaultCatalogItemOut]
