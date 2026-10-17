@@ -11,6 +11,7 @@ from app.models.dto.compensation import (
     CompensationIn,
     CompensationOut,
     CompensationWriteOut,
+    DriftListOut,
     HistoryItemOut,
     HistoryPageOut,
     SuggestionItemOut,
@@ -101,6 +102,10 @@ class CompensationService:
             )
             for row in rows
         ], next_cursor=next_cursor)
+
+    async def drifts(self, machine_id: str) -> DriftListOut:
+        await self._require(machine_id)
+        return DriftListOut(items=[], supported=False)
 
     def _items(self, payload: dict | list) -> list[CompChannelOut]:
         raw = payload if isinstance(payload, list) else payload.get("channels") or payload.get("items") or payload.get("compensation") or []

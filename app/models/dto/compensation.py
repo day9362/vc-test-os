@@ -57,3 +57,18 @@ class HistoryItemOut(BaseModel):
 class HistoryPageOut(BaseModel):
     items: list[HistoryItemOut]
     next_cursor: str | None
+
+
+class DriftItemOut(BaseModel):
+    drift_id: str
+    machine_id: str
+    channel: str
+    kind: str
+    value: float
+    step_at: float
+    current: float
+
+
+class DriftListOut(BaseModel):
+    items: list[DriftItemOut]
+    supported: bool
