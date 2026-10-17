@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     cluster_timeout_s: float = 5
     degraded_alarm: bool = True
     drift_c: float = 0.15
+    sentinel_as_data_anomaly: bool = True
 
 
 settings = Settings()
