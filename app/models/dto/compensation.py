@@ -21,3 +21,13 @@ class CompChannelOut(BaseModel):
 
 class CompensationOut(BaseModel):
     items: list[CompChannelOut]
+
+
+class CompensationIn(BaseModel):
+    mode: str
+    compensation: list[CompChannelOut]
+
+
+class CompensationWriteOut(BaseModel):
+    audit_id: str
+    items: list[CompChannelOut]
