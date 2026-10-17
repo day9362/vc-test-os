@@ -11,6 +11,8 @@ from app.models.dto.compensation import (
     CompensationIn,
     CompensationOut,
     CompensationWriteOut,
+    HistoryItemOut,
+    HistoryPageOut,
     SuggestionItemOut,
     SuggestionOut,
 )
@@ -79,6 +81,26 @@ class CompensationService:
                 reason=f"标准样品复测偏差 {item.value:+.3f} ℃",
             ))
         return SuggestionOut(items=items, basis_at=bias.measured_at)
+
+    async def list_history(self, machine_id: str, cursor: str | None, limit: int) -> HistoryPageOut:
+        await self._require(machine_id)
+        if limit < 1 or limit > 500:
+            raise AppError(400, "BAD_REQUEST", "limit 需要在 1 到 500 之间")
+        if cursor and ":" not in cursor:
+            raise AppError(400, "BAD_REQUEST", "cursor 格式不正确")
+        rows, next_cursor = await self.history.page(machine_id, cursor, limit)
+        return HistoryPageOut(items=[
+            HistoryItemOut(
+                id=row.id,
+                time=row.time,
+                actor=row.actor,
+                machine_id=row.machine_id,
+                mode=row.mode,
+                compensation=[CompChannelOut(**item) for item in (row.compensation or []) if isinstance(item, dict)],
+                audit_id=row.audit_id,
+            )
+            for row in rows
+        ], next_cursor=next_cursor)
 
     def _items(self, payload: dict | list) -> list[CompChannelOut]:
         raw = payload if isinstance(payload, list) else payload.get("channels") or payload.get("items") or payload.get("compensation") or []

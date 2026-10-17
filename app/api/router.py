@@ -20,6 +20,7 @@ from app.api.overview.attribution_rerun import router as attribution_rerun_route
 from app.api.overview.ws import router as ws_router
 from app.api.compensation.channel_bias import router as channel_bias_router
 from app.api.compensation.suggestion import router as suggestion_router
+from app.api.compensation.history import router as compensation_history_router
 from app.api.compensation.compensation import router as compensation_router
 
 api_router = APIRouter()
@@ -43,4 +44,5 @@ api_router.include_router(attribution_rerun_router)
 api_router.include_router(ws_router)
 api_router.include_router(channel_bias_router)
 api_router.include_router(suggestion_router)
+api_router.include_router(compensation_history_router)
 api_router.include_router(compensation_router)

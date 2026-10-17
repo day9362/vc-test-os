@@ -42,3 +42,18 @@ class SuggestionItemOut(BaseModel):
 class SuggestionOut(BaseModel):
     items: list[SuggestionItemOut]
     basis_at: int
+
+
+class HistoryItemOut(BaseModel):
+    id: str
+    time: int
+    actor: str
+    machine_id: str
+    mode: str
+    compensation: list[CompChannelOut]
+    audit_id: str
+
+
+class HistoryPageOut(BaseModel):
+    items: list[HistoryItemOut]
+    next_cursor: str | None
