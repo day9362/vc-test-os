@@ -23,6 +23,7 @@ from app.api.test_plan.validate_plan import router as validate_plan_router
 from app.api.test_plan.publish_plan import router as publish_plan_router
 from app.api.test_plan.create_draft import router as create_draft_router
 from app.api.test_plan.update_draft import router as update_draft_router
+from app.api.test_plan.delete_draft import router as delete_draft_router
 from app.api.test_plan.plan_detail import router as plan_detail_router
 
 api_router = APIRouter()
@@ -49,4 +50,5 @@ api_router.include_router(validate_plan_router)
 api_router.include_router(publish_plan_router)
 api_router.include_router(create_draft_router)
 api_router.include_router(update_draft_router)
+api_router.include_router(delete_draft_router)
 api_router.include_router(plan_detail_router)
