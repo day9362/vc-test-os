@@ -91,6 +91,30 @@ class PlanService:
         await self._store(idempotency_key, result)
         return result
 
+    async def update_draft(self, plan_id: str, body: PlanBody, user: UserEntity, idempotency_key: str | None) -> DraftOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return DraftOut.model_validate(cached)
+        row = await self._draft(plan_id)
+        if not body.name.strip():
+            raise AppError(400, "BAD_REQUEST", "方案名称不能为空")
+        fresh = self._row(plan_id, 0, body, row.author, row.source, True)
+        for field in ("name", "start_temp_c", "duration_s", "sample_period_s", "power_w", "force_g", "orientation", "overtemp_c", "ambient_low_c", "ambient_high_c", "limits", "updated_at"):
+            setattr(row, field, getattr(fresh, field))
+        audit_id = self.audit.record(user.user_id, "plan.draft_update", "", {"plan_id": plan_id}, {"name": body.name})
+        await self.session.commit()
+        result = DraftOut(**item_out(entity_of(row, [])).model_dump(), audit_id=audit_id)
+        await self._store(idempotency_key, result)
+        return result
+
+    async def _draft(self, plan_id: str) -> TestPlanOrm:
+        row = await self.plans.one(plan_id, 0)
+        if row is None or not row.draft:
+            if row is None and not await self.plans.of(plan_id):
+                raise AppError(404, "NOT_FOUND", f"草稿 {plan_id} 不存在")
+            raise AppError(409, "CONFLICT", "已发布方案不能直接修改")
+        return row
+
     def _row(self, plan_id: str, version: int, body: PlanBody, author: str, source: str, draft: bool) -> TestPlanOrm:
         return TestPlanOrm(
             plan_id=plan_id,
