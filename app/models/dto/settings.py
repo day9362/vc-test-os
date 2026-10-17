@@ -100,3 +100,22 @@ class FaultCatalogItemOut(BaseModel):
 
 class FaultCatalogOut(BaseModel):
     items: list[FaultCatalogItemOut]
+
+
+class ClockIn(BaseModel):
+    speed: float
+
+
+class ScenarioApplyIn(BaseModel):
+    machine_id: str
+
+
+class FaultInjectIn(BaseModel):
+    machine_id: str
+    kind: str
+    slot_index: int | None = None
+
+
+class SimActionOut(BaseModel):
+    audit_id: str
+    result: dict = Field(default_factory=dict)
