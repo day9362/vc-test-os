@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
 from app.core.errors import AppError
-from app.models.dto.test_plan import PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
+from app.models.dto.test_plan import DraftOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
 from app.models.entity.user import UserEntity
 from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
@@ -73,6 +73,21 @@ class PlanService:
         audit_id = self.audit.record(user.user_id, "plan.publish", "", {"plan_id": plan_id, "name": body.name}, {"version": version})
         result = PublishOut(plan_id=plan_id, version=version, audit_id=audit_id)
         await self.session.commit()
+        await self._store(idempotency_key, result)
+        return result
+
+    async def create_draft(self, body: PlanBody, user: UserEntity, idempotency_key: str | None, source: str = "manual") -> DraftOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return DraftOut.model_validate(cached)
+        if not body.name.strip():
+            raise AppError(400, "BAD_REQUEST", "方案名称不能为空")
+        plan_id = f"DRAFT-{uuid4().hex[:8]}"
+        row = self._row(plan_id, 0, body, user.name, source, True)
+        self.plans.add(row)
+        audit_id = self.audit.record(user.user_id, "plan.draft", "", {"plan_id": plan_id, "name": body.name}, {"draft": True})
+        await self.session.commit()
+        result = DraftOut(**item_out(entity_of(row, [])).model_dump(), audit_id=audit_id)
         await self._store(idempotency_key, result)
         return result
 
