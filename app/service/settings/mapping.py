@@ -91,6 +91,47 @@ def settings_entity(payload: dict, updated_at: int) -> PlatformSettings:
     )
 
 
+def looks_masked(value: str) -> bool:
+    return "****" in value
+
+
+def keep_secret(incoming: str, stored: str, masked: str) -> str:
+    if incoming == stored:
+        return stored
+    if not incoming and not stored:
+        return stored
+    if incoming == masked or looks_masked(incoming):
+        return stored
+    return incoming
+
+
+def merge_secrets(incoming: dict, stored: dict) -> dict:
+    incoming = dict(incoming)
+    cluster = dict(incoming.get("cluster") or {})
+    stored_cluster = stored.get("cluster") or {}
+    cluster["token"] = keep_secret(
+        cluster.get("token") or "",
+        stored_cluster.get("token") or "",
+        mask_secret(stored_cluster.get("token") or ""),
+    )
+    incoming["cluster"] = cluster
+    ai = dict(incoming.get("ai") or {})
+    stored_ai = stored.get("ai") or {}
+    ai["api_key"] = keep_secret(
+        ai.get("api_key") or "",
+        stored_ai.get("api_key") or "",
+        mask_secret(stored_ai.get("api_key") or ""),
+    )
+    incoming["ai"] = ai
+    storage = dict(incoming.get("storage") or {})
+    stored_storage = stored.get("storage") or {}
+    stored_dsn = stored_storage.get("dsn") or ""
+    incoming_dsn = storage.get("dsn") or ""
+    storage["dsn"] = stored_dsn if incoming_dsn == mask_dsn(stored_dsn) or looks_masked(incoming_dsn) else incoming_dsn
+    incoming["storage"] = storage
+    return incoming
+
+
 def settings_out(entity: PlatformSettings) -> PlatformSettingsOut:
     return PlatformSettingsOut(
         source=entity.source,

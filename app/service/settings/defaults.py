@@ -12,6 +12,14 @@ DEFAULT_JOBS = [
     {"key": "agg", "name": "5 分钟汇总", "api": "本地 · 连续聚合 agg_5m", "interval_s": 300, "enabled": True, "note": "良率、Rc 均值、异常数"},
 ]
 
+JOB_KEYS = ("fleet", "slots", "machine", "runs", "samples", "plans", "batches", "calib", "agg")
+FAST_JOBS = {"fleet", "slots", "samples"}
+
+
+def min_interval(key: str) -> int:
+    return 1 if key in FAST_JOBS else 5
+
+
 DEFAULT_AI_MODELS = {
     "agent.analysis": "deepseek-v3",
     "agent.plan": "qwen3-max",

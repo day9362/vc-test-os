@@ -19,6 +19,7 @@ from app.api.overview.attribution import router as attribution_router
 from app.api.overview.attribution_rerun import router as attribution_rerun_router
 from app.api.overview.ws import router as ws_router
 from app.api.settings.get import router as settings_get_router
+from app.api.settings.put import router as settings_put_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -40,3 +41,4 @@ api_router.include_router(attribution_router)
 api_router.include_router(attribution_rerun_router)
 api_router.include_router(ws_router)
 api_router.include_router(settings_get_router)
+api_router.include_router(settings_put_router)

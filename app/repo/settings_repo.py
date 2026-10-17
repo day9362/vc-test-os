@@ -16,3 +16,10 @@ class SettingsRepo:
             self.session.add(row)
             await self.session.flush()
         return row
+
+    async def save(self, payload: dict) -> SettingsOrm:
+        row = await self.get_or_create()
+        row.payload = payload
+        row.updated_at = now_ms()
+        await self.session.flush()
+        return row
