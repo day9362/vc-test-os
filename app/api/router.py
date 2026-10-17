@@ -33,6 +33,7 @@ from app.api.test_plan.delete_draft import router as delete_draft_router
 from app.api.test_plan.plan_detail import router as plan_detail_router
 from app.api.runs.list import router as runs_list_router
 from app.api.runs.detail import router as runs_detail_router
+from app.api.runs.samples import router as runs_samples_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -67,4 +68,5 @@ api_router.include_router(update_draft_router)
 api_router.include_router(delete_draft_router)
 api_router.include_router(plan_detail_router)
 api_router.include_router(runs_list_router)
+api_router.include_router(runs_samples_router)
 api_router.include_router(runs_detail_router)
