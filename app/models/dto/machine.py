@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CapabilityOut(BaseModel):
@@ -61,6 +61,29 @@ class CurvePointOut(BaseModel):
     T1: float
     Ta: float
     power_w: float
+
+
+class MachineActionOut(BaseModel):
+    audit_id: str
+    machine_id: str
+    status: str
+
+
+class MaintenanceIn(BaseModel):
+    on: bool
+
+
+class PlanUseOut(BaseModel):
+    plan_id: str
+    name: str
+    version: int
+    started_at: int = Field(serialization_alias="from")
+    to: int | None
+    runs: int
+
+
+class PlanHistoryOut(BaseModel):
+    items: list[PlanUseOut]
 
 
 class SlotCurveOut(BaseModel):
