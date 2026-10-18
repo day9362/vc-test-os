@@ -111,7 +111,7 @@ def _machines(session, now: int) -> None:
                 progress=60 if sampling else 0,
                 run_id=f"R-{machine_id}-{slot}-seed" if phase != "IDLE" else None,
             ))
-            if sampling and slot == 1:
+            if sampling:
                 _curve(session, machine_id, slot, hvp)
 
 
