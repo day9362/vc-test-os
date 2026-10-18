@@ -61,6 +61,8 @@ class RunRepo:
             stmt = stmt.where(RunOrm.batch_id == batch_id)
         if passed_is_null:
             stmt = stmt.where(RunOrm.passed.is_(None))
+            if not status:
+                stmt = stmt.where(RunOrm.status.in_(("ABORTED", "FAULT")))
         elif passed is not None:
             stmt = stmt.where(RunOrm.passed == passed)
         if status:
