@@ -5,9 +5,9 @@ from app.core.clock import now_ms
 from app.core.errors import AppError
 from app.models.dto.alarm import AckAllOut, AlarmActionOut, AlarmOut, AlarmPageOut, AttributionOut
 from app.models.entity.user import UserEntity
-from app.models.orm.alarm import AttributionOrm
 from app.repo.alarm_repo import AlarmRepo
 from app.repo.audit_repo import AuditRepo
+from app.service.overview.hub import hub
 from app.service.overview.mapping import alarm_entity, alarm_out, attribution_out
 
 
@@ -21,6 +21,8 @@ class AlarmService:
     async def list_alarms(self, acked: bool | None, machine_id: str | None, level: str | None, cursor: str | None, limit: int) -> AlarmPageOut:
         if limit < 1 or limit > 500:
             raise AppError(400, "BAD_REQUEST", "limit 需要在 1 到 500 之间")
+        if level is not None and level not in {"critical", "major", "minor"}:
+            raise AppError(400, "BAD_REQUEST", "level 只能是 critical、major 或 minor")
         if cursor and ":" not in cursor:
             raise AppError(400, "BAD_REQUEST", "cursor 格式不正确")
         rows, next_cursor = await self.alarms.page(acked, machine_id, level, cursor, limit)
@@ -67,26 +69,34 @@ class AlarmService:
         audit_id = self.audit.record(user.user_id, "alarm.ack_all", "", {"count": len(rows)}, {"updated": len(rows)})
         body = AckAllOut(updated=len(rows), audit_id=audit_id)
         await self.session.commit()
+        for row in rows:
+            await hub.publish("alarms", alarm_out(alarm_entity(row)).model_dump())
         await self._store(idempotency_key, body)
         return body
 
     async def attribution(self, alarm_id: str) -> AttributionOut:
-        await self._require(alarm_id)
+        alarm = await self._require(alarm_id)
         row = await self.alarms.attribution(alarm_id)
         if row is None:
-            row = AttributionOrm(alarm_id=alarm_id, status="pending", summary="", evidence=[], suggestion="", model="", created_at=now_ms())
-            self.session.add(row)
+            from app.service.overview.attribution import build_attribution
+
+            row = await build_attribution(self.session, alarm, "系统")
             await self.session.commit()
         return attribution_out(row)
 
-    async def rerun_attribution(self, alarm_id: str, user: UserEntity) -> AttributionOut:
+    async def rerun_attribution(self, alarm_id: str, user: UserEntity, idempotency_key: str | None) -> AttributionOut:
+        cached = await self._cached(idempotency_key)
+        if cached:
+            return AttributionOut.model_validate(cached)
         from app.service.overview.attribution import build_attribution
 
         alarm = await self._require(alarm_id)
         row = await build_attribution(self.session, alarm, user.name)
         self.audit.record(user.user_id, "alarm.attribution", alarm.machine_id, {"alarm_id": alarm_id}, {"status": row.status})
+        body = attribution_out(row)
         await self.session.commit()
-        return attribution_out(row)
+        await self._store(idempotency_key, body)
+        return body
 
     async def _require(self, alarm_id: str):
         row = await self.alarms.get(alarm_id)
