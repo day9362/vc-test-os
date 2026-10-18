@@ -99,9 +99,94 @@ async def scan_alarms(session: AsyncSession) -> None:
     for slot in slots:
         if slot.phase == "ERROR":
             created += _open(session, open_keys, slot.machine_id, slot.index, "major", "槽位", "SLOT_ERROR", slot.last_error or "槽位错误")
+        if settings.sentinel_as_data_anomaly:
+            for channel, value in (("T0", slot.t0), ("T1", slot.t1), ("Ta", slot.ta)):
+                code = _sentinel_code(value)
+                if code:
+                    created += _open(session, open_keys, slot.machine_id, slot.index, "minor", "数据", code, f"{channel} 读数 {_plain(value)}（哨兵值）")
+    created += await _drift_alarms(session, open_keys)
+    created += await _consecutive_alarms(session, open_keys)
+    created += _ambient_alarms(session, machines, open_keys)
     for alarm in created:
         await build_attribution(session, alarm, "系统")
         await hub.publish("alarms", alarm_out(alarm_entity(alarm)).model_dump())
+
+
+PLAN_AMBIENT = {"PLAN-592bbc46": (23.0, 27.0), "PLAN-3f2c71d0": (23.0, 27.0)}
+SENTINELS = {99999: "SENSOR_99999", 9999: "SENSOR_9999", -1: "SENSOR_NO_RESPONSE", -2: "SENSOR_UNPARSEABLE"}
+
+
+def _plain(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _sentinel_code(value: float) -> str | None:
+    if not float(value).is_integer():
+        return None
+    return SENTINELS.get(int(value))
+
+
+def _ambient_alarms(session, machines, keys) -> list[AlarmOrm]:
+    created: list[AlarmOrm] = []
+    for machine in machines:
+        bounds = PLAN_AMBIENT.get(machine.plan_id or "")
+        if bounds is None:
+            continue
+        low, high = bounds
+        if low <= machine.room_temp_c <= high:
+            continue
+        created += _open(
+            session, keys, machine.machine_id, None, "major", "机台", "AMBIENT_RANGE",
+            f"房间温度 {machine.room_temp_c:.1f} ℃ 超出方案范围 {low:.0f}–{high:.0f} ℃",
+        )
+    return created
+
+
+async def _drift_alarms(session: AsyncSession, keys) -> list[AlarmOrm]:
+    rows = (await session.execute(
+        select(RunOrm.machine_id, RunOrm.dt01).where(RunOrm.dt01.is_not(None)).order_by(RunOrm.ended_at.desc()).limit(4000)
+    )).all()
+    grouped: dict[str, list[float]] = {}
+    for machine_id, dt01 in rows:
+        bucket = grouped.setdefault(machine_id, [])
+        if len(bucket) < 30:
+            bucket.append(float(dt01))
+    created: list[AlarmOrm] = []
+    for machine_id, samples in grouped.items():
+        if len(samples) < 5:
+            continue
+        baseline = sorted(samples[1:])
+        mid = len(baseline) // 2
+        median = baseline[mid] if len(baseline) % 2 else (baseline[mid - 1] + baseline[mid]) / 2
+        estimate = samples[0] - median
+        if abs(estimate) <= settings.drift_c:
+            continue
+        created += _open(
+            session, keys, machine_id, None, "major", "漂移", "EQUIPMENT_ANOMALY",
+            f"T0-T1 通道漂移 {estimate:+.3f} ℃",
+        )
+    return created
+
+
+async def _consecutive_alarms(session: AsyncSession, keys) -> list[AlarmOrm]:
+    rows = (await session.execute(
+        select(RunOrm.machine_id, RunOrm.passed, RunOrm.fail_items)
+        .where(RunOrm.status == "COMPLETED", RunOrm.passed.is_not(None))
+        .order_by(RunOrm.ended_at.desc())
+        .limit(4000)
+    )).all()
+    grouped: dict[str, list] = {}
+    for machine_id, passed, fail_items in rows:
+        bucket = grouped.setdefault(machine_id, [])
+        if len(bucket) < 3:
+            bucket.append((passed, fail_items or []))
+    created: list[AlarmOrm] = []
+    for machine_id, samples in grouped.items():
+        if len(samples) < 3 or any(passed for passed, _items in samples):
+            continue
+        item = samples[0][1][0] if samples[0][1] else "CONSECUTIVE_FAIL"
+        created += _open(session, keys, machine_id, None, "major", "判定", str(item), f"连续 3 片 {item} 不合格")
+    return created
 
 
 def _open(session, keys, machine_id, slot_index, level, source, code, message) -> list[AlarmOrm]:

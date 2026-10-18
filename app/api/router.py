@@ -17,7 +17,12 @@ from app.api.overview.unack_alarm import router as unack_router
 from app.api.overview.ack_all import router as ack_all_router
 from app.api.overview.attribution import router as attribution_router
 from app.api.overview.attribution_rerun import router as attribution_rerun_router
-from app.api.overview.ws import router as ws_router
+from app.api.realtime.ws import router as ws_router
+from app.api.machines.power_on import router as power_on_router
+from app.api.machines.power_off import router as power_off_router
+from app.api.machines.maintenance import router as maintenance_router
+from app.api.machines.reset import router as reset_router
+from app.api.machines.plan_history import router as plan_history_router
 from app.api.test_plan.list_plans import router as list_plans_router
 from app.api.test_plan.validate_plan import router as validate_plan_router
 from app.api.test_plan.publish_plan import router as publish_plan_router
@@ -46,6 +51,11 @@ api_router.include_router(ack_all_router)
 api_router.include_router(attribution_router)
 api_router.include_router(attribution_rerun_router)
 api_router.include_router(ws_router)
+api_router.include_router(power_on_router)
+api_router.include_router(power_off_router)
+api_router.include_router(maintenance_router)
+api_router.include_router(reset_router)
+api_router.include_router(plan_history_router)
 api_router.include_router(list_plans_router)
 api_router.include_router(validate_plan_router)
 api_router.include_router(publish_plan_router)
