@@ -7,6 +7,7 @@ from app.core.database import SessionLocal
 from app.core.security import hash_password
 from app.models.entity.user import UserEntity
 from app.models.orm.alarm import AlarmOrm, AttributionOrm
+from app.models.orm.test_plan import TestPlanOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.plan import PlanDispatchOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
@@ -57,6 +58,7 @@ async def seed() -> None:
         _plan_history(session, now)
         _runs_and_agg(session, now)
         _alarms(session, now)
+        _plans(session, now)
         await session.commit()
 
 
@@ -228,4 +230,37 @@ def _alarms(session, now: int) -> None:
         suggestion="写入 T1 补偿 −0.18 ℃ 后用标准样品复测",
         model="rule",
         created_at=now - 3 * 60_000,
+    ))
+
+
+def _limits(t01: float, t1x: float, power: float) -> list[dict]:
+    rows = [{"item": "Temp_T0-T1", "low": 0, "high": t01, "unit": "℃", "skipped": False}]
+    rows += [{"item": f"Temp_T1-T{index + 2}", "low": 0, "high": t1x, "unit": "℃", "skipped": index > 10} for index in range(13)]
+    low = round(power - 0.1, 2)
+    high = round(power + 0.1, 2)
+    rows.append({"item": "power_w", "low": low, "high": high, "unit": "W", "skipped": False})
+    return rows
+
+
+def _plans(session, now: int) -> None:
+    hour = 3_600_000
+    published = [
+        ("PLAN-592bbc46", "45度测3分钟", 2.5, 100, 0, 180, 2.8, 4.0, "李工", "manual", now - 26 * hour, [1, 2]),
+        ("PLAN-3f2c71d0", "HVP 3.5W 标准测试", 3.5, 120, 0, 180, 3.4, 4.8, "王工", "agent", now - 3 * 24 * hour, [1, 2, 3]),
+        ("PLAN-a6109ec7", "现场观察", 2.5, 100, 90, 10, None, None, "周工", "manual", now - 6 * 24 * hour, [1, 2, 3, 4]),
+        ("PLAN-7c04be19", "tb 系列 90° 竖放", 2.5, 100, 90, 240, 3.0, 4.2, "李明远", "agent", now - 40 * 60_000, [1]),
+    ]
+    for plan_id, name, power, force, orientation, duration, t01, t1x, author, source, updated, versions in published:
+        limits = [{"item": "power_w", "low": round(power - 0.1, 2), "high": round(power + 0.1, 2), "unit": "W", "skipped": False}] if t01 is None else _limits(t01, t1x, power)
+        for version in versions:
+            session.add(TestPlanOrm(
+                plan_id=plan_id, version=version, name=name, start_temp_c=45, duration_s=duration if version == versions[-1] else max(10, duration - 30),
+                sample_period_s=1, power_w=power, force_g=force, orientation=orientation, overtemp_c=80,
+                ambient_low_c=23, ambient_high_c=27, limits=limits, author=author, source=source, draft=False,
+                updated_at=updated - (versions[-1] - version) * hour,
+            ))
+    session.add(TestPlanOrm(
+        plan_id="DRAFT-0001", version=0, name="高压紧力对比（草稿）", start_temp_c=45, duration_s=180, sample_period_s=1,
+        power_w=2.5, force_g=160, orientation=0, overtemp_c=80, ambient_low_c=23, ambient_high_c=27,
+        limits=_limits(2.8, 4.0, 2.5)[:-1], author="李明远", source="agent", draft=True, updated_at=now - 12 * 60_000,
     ))

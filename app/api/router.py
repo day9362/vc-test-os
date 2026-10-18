@@ -23,6 +23,14 @@ from app.api.machines.power_off import router as power_off_router
 from app.api.machines.maintenance import router as maintenance_router
 from app.api.machines.reset import router as reset_router
 from app.api.machines.plan_history import router as plan_history_router
+from app.api.test_plan.list_plans import router as list_plans_router
+from app.api.test_plan.validate_plan import router as validate_plan_router
+from app.api.test_plan.publish_plan import router as publish_plan_router
+from app.api.test_plan.create_draft import router as create_draft_router
+from app.api.test_plan.draft_from_text import router as draft_from_text_router
+from app.api.test_plan.update_draft import router as update_draft_router
+from app.api.test_plan.delete_draft import router as delete_draft_router
+from app.api.test_plan.plan_detail import router as plan_detail_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -48,3 +56,11 @@ api_router.include_router(power_off_router)
 api_router.include_router(maintenance_router)
 api_router.include_router(reset_router)
 api_router.include_router(plan_history_router)
+api_router.include_router(list_plans_router)
+api_router.include_router(validate_plan_router)
+api_router.include_router(publish_plan_router)
+api_router.include_router(draft_from_text_router)
+api_router.include_router(create_draft_router)
+api_router.include_router(update_draft_router)
+api_router.include_router(delete_draft_router)
+api_router.include_router(plan_detail_router)

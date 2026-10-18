@@ -3,6 +3,7 @@ from app.models.orm.base import Base
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.plan import PlanDispatchOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
+from app.models.orm.test_plan import TestPlanOrm
 from app.models.orm.user import UserOrm
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "RunOrm",
     "RunSampleOrm",
     "SlotOrm",
+    "TestPlanOrm",
     "UserOrm",
 ]
