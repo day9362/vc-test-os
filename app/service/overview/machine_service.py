@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.models.dto.machine import MachineOut, SlotCurveOut
+from app.models.orm.run import RunOrm
 from app.repo.machine_repo import MachineRepo
 from app.repo.run_repo import RunRepo
 from app.service.overview.mapping import machine_entity, machine_out
@@ -9,6 +10,7 @@ from app.service.overview.mapping import machine_entity, machine_out
 
 class MachineService:
     def __init__(self, session: AsyncSession):
+        self.session = session
         self.machines = MachineRepo(session)
         self.runs = RunRepo(session)
 
@@ -31,7 +33,11 @@ class MachineService:
             raise AppError(404, "NOT_FOUND", f"机台 {machine_id} 不存在")
         _, slots = found
         slot = next((item for item in slots if item.index == index), None)
-        run = await self.runs.latest_for_slot(machine_id, index, slot.run_id if slot else None)
+        run = None
+        if slot is not None and slot.phase == "SAMPLING" and slot.run_id:
+            run = await self.session.get(RunOrm, slot.run_id)
+        if run is None and (slot is None or slot.phase != "SAMPLING"):
+            run = await self.runs.latest_for_slot(machine_id, index, slot.run_id if slot else None)
         if run is None:
             return SlotCurveOut(run_id=None, plan_id=None, plan_version=None, duration_s=None, points=[], deltas={})
         samples = await self.runs.samples(run.run_id, since)
