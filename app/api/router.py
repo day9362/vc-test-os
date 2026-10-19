@@ -50,6 +50,14 @@ from app.api.settings.sim_catalog import router as settings_sim_catalog_router
 from app.api.settings.sim_actions import router as settings_sim_actions_router
 from app.api.search.get import router as search_router
 from app.api.audit.list import router as audit_router
+from app.api.production.models import router as models_router
+from app.api.production.batches import router as batches_router
+from app.api.production.batch_stats import router as batch_stats_router
+from app.api.production.batch_stat import router as batch_stat_router
+from app.api.production.get import router as production_router
+from app.api.production.precheck import router as precheck_router
+from app.api.production.start import router as production_start_router
+from app.api.production.stop import router as production_stop_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -102,3 +110,11 @@ api_router.include_router(settings_sim_catalog_router)
 api_router.include_router(settings_sim_actions_router)
 api_router.include_router(search_router)
 api_router.include_router(audit_router)
+api_router.include_router(models_router)
+api_router.include_router(batches_router)
+api_router.include_router(batch_stats_router)
+api_router.include_router(batch_stat_router)
+api_router.include_router(production_router)
+api_router.include_router(precheck_router)
+api_router.include_router(production_start_router)
+api_router.include_router(production_stop_router)
