@@ -1,12 +1,14 @@
 import asyncio
 import csv
 import io
+import logging
 from time import monotonic
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.core.errors import AppError
 from app.models.dto.run import RunDetailOut, RunGroundTruthOut, RunPageOut, RunSamplesOut
 from app.repo.run_repo import RunRepo
@@ -14,7 +16,9 @@ from app.repo.settings_repo import SettingsRepo
 from app.service.runs.cluster_ingest import fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
 
+log = logging.getLogger(__name__)
 _last_ingest = 0.0
+_INGEST_GAP_S = 60.0
 
 
 class RunService:
@@ -50,18 +54,17 @@ class RunService:
         if cursor and ":" not in cursor:
             raise AppError(400, "BAD_REQUEST", "cursor 格式不正确")
         passed_value, passed_is_null = self._parse_passed(passed)
-        await self._ingest()
+        await self._ensure_fleet()
+        self._schedule_ingest()
         exclude_seed = bool(settings.cluster_base_url)
-        fleet_ids = fleet_machine_ids() if exclude_seed else None
-        if exclude_seed and not fleet_ids:
-            return RunPageOut(items=[], next_cursor=None)
+        fleet_ids = fleet_machine_ids() or None
         rows, next_cursor = await self.runs.page(
             machine_id, batch_id, passed_value, passed_is_null, status, q, start, end, cursor, limit, exclude_seed, fleet_ids
         )
         return RunPageOut(items=[run_out(run_entity(row)) for row in rows], next_cursor=next_cursor)
 
     async def get_run(self, run_id: str) -> RunDetailOut:
-        await self._ingest()
+        await self._ensure_fleet()
         row = await self.runs.get(run_id)
         if row is None:
             raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
@@ -72,7 +75,7 @@ class RunService:
         return run_detail_out(run_entity(row))
 
     async def get_samples(self, run_id: str, since: float | None) -> RunSamplesOut:
-        await self._ingest()
+        await self._ensure_fleet()
         row = await self.runs.get(run_id)
         if row is None:
             raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
@@ -134,19 +137,28 @@ class RunService:
             raise AppError(502, "CLUSTER_ERROR", "集群返回无法解析")
         return RunGroundTruthOut.model_validate(body)
 
-    async def _ingest(self) -> None:
+    async def _ensure_fleet(self) -> None:
+        if settings.cluster_base_url and not fleet_machine_ids():
+            await refresh_fleet()
+
+    def _schedule_ingest(self) -> None:
+        """集群 /runs 可能很慢，不挡列表；后台补齐本地库。"""
         global _last_ingest
         if not settings.cluster_base_url:
             return
         now = monotonic()
-        if now - _last_ingest < 15:
+        if now - _last_ingest < _INGEST_GAP_S:
             return
         _last_ingest = now
-        await refresh_fleet()
-        await ingest_run_list(self.session)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(_ingest_in_background())
 
     async def export_csv(self, batch_id: str | None, start: int | None, end: int | None) -> str:
-        await self._ingest()
+        await self._ensure_fleet()
+        self._schedule_ingest()
         rows = await self.runs.list_for_export(batch_id, start, end, bool(settings.cluster_base_url), fleet_machine_ids() or None)
         buffer = io.StringIO()
         writer = csv.writer(buffer)
@@ -172,6 +184,14 @@ class RunService:
                 row.ended_at,
             ])
         return buffer.getvalue()
+
+
+async def _ingest_in_background() -> None:
+    try:
+        async with SessionLocal() as session:
+            await ingest_run_list(session)
+    except Exception:
+        log.warning("cluster run ingest skipped", exc_info=True)
 
 
 def _get_ground_truth(url: str, timeout: float) -> httpx.Response:

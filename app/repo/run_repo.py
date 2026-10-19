@@ -17,10 +17,11 @@ class RunRepo:
                 bucket.append(passed)
         return grouped
 
-    async def recent_rc(self, limit: int = 120) -> list[float]:
-        rows = (await self.session.execute(
-            select(RunOrm.rc).where(RunOrm.rc.is_not(None)).order_by(RunOrm.ended_at.desc()).limit(limit)
-        )).scalars().all()
+    async def recent_rc(self, limit: int = 120, fleet_ids: list[str] | None = None) -> list[float]:
+        stmt = select(RunOrm.rc).where(RunOrm.rc.is_not(None))
+        if fleet_ids:
+            stmt = stmt.where(RunOrm.machine_id.in_(fleet_ids))
+        rows = (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc()).limit(limit))).scalars().all()
         return [float(value) for value in rows]
 
     async def mean_rc_by_machine(self) -> dict[str, list[float]]:
