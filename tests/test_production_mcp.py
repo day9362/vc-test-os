@@ -118,5 +118,24 @@ class StartStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.status, 502)
         self.assertEqual(raised.exception.code, "CLUSTER_ERROR")
 
+    async def test_stop_calls_device_mcp(self) -> None:
+        service = ProductionService(session=SimpleNamespace(commit=AsyncMock()), redis=None)
+        batch = _batch(state="running", eta_s=1)
+        current = SimpleNamespace(batch_id="B-1", active=True)
+        service._cached = AsyncMock(return_value=None)
+        service.repo.batch = AsyncMock(return_value=batch)
+        service.repo.production = AsyncMock(return_value=current)
+        service.audit.record = lambda *args, **kwargs: "AUD-2"
+        service._store = AsyncMock()
+        with patch("app.service.production.service.stop_on_device", new=AsyncMock(return_value={})) as device:
+            with patch("app.service.production.service.push_production", new=AsyncMock()):
+                with patch("app.service.production.service.push_batch", new=AsyncMock()):
+                    result = await service.stop("B-1", SimpleNamespace(user_id="limingyuan"), "k2")
+        device.assert_awaited_once_with("B-1")
+        self.assertEqual(result.audit_id, "AUD-2")
+        self.assertEqual(batch.state, "stopped")
+        self.assertFalse(current.active)
+
+
 if __name__ == "__main__":
     unittest.main()
