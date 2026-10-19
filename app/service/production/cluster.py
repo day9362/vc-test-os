@@ -1,8 +1,8 @@
 import httpx
 
 from app.core.config import settings
-from app.core.errors import AppError
 from app.service.machines.cluster import post_cluster
+from app.core.errors import AppError
 
 
 def items(body: object, *keys: str) -> list[dict]:
