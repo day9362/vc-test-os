@@ -26,7 +26,8 @@ class ProductionRepo:
         return list(rows.all())
 
     async def batch(self, batch_id: str) -> BatchRecordOrm | None:
-        return await self.session.get(BatchRecordOrm, batch_id)
+        with self.session.no_autoflush:
+            return await self.session.get(BatchRecordOrm, batch_id)
 
     async def save_batch(self, row: BatchRecordOrm) -> None:
         await self.session.merge(row)

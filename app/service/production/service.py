@@ -1,6 +1,7 @@
 import json
 
 from redis.asyncio import Redis
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
@@ -155,8 +156,11 @@ class ProductionService:
         return result
 
     async def _prepare(self) -> None:
-        if not await self.repo.models() or not await self.repo.batches():
-            await self.sync.pull()
+        try:
+            if not await self.repo.models() or not await self.repo.batches():
+                await self.sync.pull()
+        except IntegrityError:
+            await self.session.rollback()
         await ingest_cluster_plans(self.session)
         await self.sync.refresh_stats()
         await self.session.commit()
