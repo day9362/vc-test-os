@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.orm.run import RunOrm, RunSampleOrm
@@ -42,6 +42,89 @@ class RunRepo:
         return (await self.session.execute(
             select(RunOrm).where(RunOrm.machine_id == machine_id, RunOrm.slot_index == slot_index).order_by(RunOrm.ended_at.desc()).limit(1)
         )).scalar_one_or_none()
+
+    def _filtered(
+        self,
+        machine_id: str | None,
+        batch_id: str | None,
+        passed: bool | None,
+        passed_is_null: bool,
+        status: str | None,
+        q: str | None,
+        start: int | None,
+        end: int | None,
+        exclude_seed: bool = False,
+        fleet_ids: list[str] | None = None,
+    ) -> Select:
+        stmt = select(RunOrm)
+        if exclude_seed:
+            stmt = stmt.where(RunOrm.batch_id != "B-tb172-seed", ~RunOrm.run_id.like("%-seed"))
+        if fleet_ids:
+            stmt = stmt.where(RunOrm.machine_id.in_(fleet_ids))
+        if machine_id:
+            stmt = stmt.where(RunOrm.machine_id == machine_id)
+        if batch_id:
+            stmt = stmt.where(RunOrm.batch_id == batch_id)
+        if passed_is_null:
+            if not status:
+                stmt = stmt.where(RunOrm.status.in_(("ABORTED", "FAULT")))
+            else:
+                stmt = stmt.where(RunOrm.passed.is_(None))
+        elif passed is True:
+            stmt = stmt.where(RunOrm.passed.is_(True), RunOrm.status == "COMPLETED")
+        elif passed is False:
+            stmt = stmt.where(RunOrm.passed.is_(False), RunOrm.status == "COMPLETED")
+        if status:
+            stmt = stmt.where(RunOrm.status == status)
+        if q:
+            pattern = f"%{q}%"
+            stmt = stmt.where(or_(RunOrm.run_id.ilike(pattern), RunOrm.serial_number.ilike(pattern)))
+        if start is not None:
+            stmt = stmt.where(RunOrm.ended_at >= start)
+        if end is not None:
+            stmt = stmt.where(RunOrm.ended_at <= end)
+        return stmt
+
+    async def page(
+        self,
+        machine_id: str | None,
+        batch_id: str | None,
+        passed: bool | None,
+        passed_is_null: bool,
+        status: str | None,
+        q: str | None,
+        start: int | None,
+        end: int | None,
+        cursor: str | None,
+        limit: int,
+        exclude_seed: bool = False,
+        fleet_ids: list[str] | None = None,
+    ) -> tuple[list[RunOrm], str | None]:
+        stmt = self._filtered(machine_id, batch_id, passed, passed_is_null, status, q, start, end, exclude_seed, fleet_ids)
+        if cursor:
+            mark_time, mark_id = cursor.split(":", 1)
+            stmt = stmt.where(
+                (RunOrm.ended_at < int(mark_time))
+                | ((RunOrm.ended_at == int(mark_time)) & (RunOrm.run_id < mark_id))
+            )
+        rows = list(
+            (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc()).limit(limit + 1))).scalars().all()
+        )
+        next_cursor = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            next_cursor = f"{last.ended_at}:{last.run_id}"
+            rows = rows[:limit]
+        return rows, next_cursor
+
+    async def get(self, run_id: str) -> RunOrm | None:
+        return await self.session.get(RunOrm, run_id)
+
+    async def list_for_export(self, batch_id: str | None, start: int | None, end: int | None, exclude_seed: bool = False, fleet_ids: list[str] | None = None) -> list[RunOrm]:
+        stmt = self._filtered(None, batch_id, None, False, None, None, start, end, exclude_seed, fleet_ids)
+        return list(
+            (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc()))).scalars().all()
+        )
 
     async def samples(self, run_id: str, since: float | None) -> list[RunSampleOrm]:
         stmt = select(RunSampleOrm).where(RunSampleOrm.run_id == run_id)
