@@ -4,6 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.clock import now_ms
 from app.core.database import SessionLocal
+from app.service.production.sync import CatalogSync, publish_catalog
 from app.service.realtime.watch import watch_changes
 from app.tasks.job_runs import record
 from app.tasks.sync import rollup_agg, scan_alarms, sync_cluster
@@ -43,6 +44,20 @@ async def _watch_job() -> None:
     await _run(watch_changes)
 
 
+async def _catalog_job() -> None:
+    async with SessionLocal() as session:
+        try:
+            sync = CatalogSync(session)
+            await sync.pull()
+            snapshot, batches = await sync.refresh_stats()
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("scheduled job failed: catalog")
+            return
+    await publish_catalog(snapshot, batches)
+
+
 def start_scheduler() -> None:
     if scheduler.running:
         return
@@ -50,6 +65,7 @@ def start_scheduler() -> None:
     scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", replace_existing=True)
     scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", replace_existing=True)
     scheduler.add_job(_watch_job, "interval", seconds=1, id="realtime_watch", replace_existing=True)
+    scheduler.add_job(_catalog_job, "interval", seconds=30, id="sync_catalog", replace_existing=True)
     scheduler.start()
 
 

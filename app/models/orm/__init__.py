@@ -3,6 +3,7 @@ from app.models.orm.base import Base
 from app.models.orm.compensation import CompHistoryOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.plan import PlanDispatchOrm
+from app.models.orm.production import BatchRecordOrm, ProductModelOrm, ProductionOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
 from app.models.orm.settings import SettingsOrm
 from app.models.orm.test_plan import TestPlanOrm
@@ -17,7 +18,10 @@ __all__ = [
     "CompHistoryOrm",
     "Base",
     "MachineOrm",
+    "BatchRecordOrm",
     "PlanDispatchOrm",
+    "ProductModelOrm",
+    "ProductionOrm",
     "RunOrm",
     "RunSampleOrm",
     "SettingsOrm",

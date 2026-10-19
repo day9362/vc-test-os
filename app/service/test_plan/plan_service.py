@@ -15,7 +15,7 @@ from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.test_plan_repo import TestPlanRepo
-from app.service.test_plan.cluster import publish_cluster
+from app.service.test_plan.cluster import ingest_cluster_plans, publish_cluster
 from app.service.test_plan.from_text import draft_from_text
 from app.service.test_plan.mapping import entity_of, item_out
 from app.service.test_plan.validate import fleet_bounds, validate_plan
@@ -29,6 +29,8 @@ class PlanService:
         self.redis = redis
 
     async def list_plans(self) -> list[PlanItemOut]:
+        if await ingest_cluster_plans(self.session):
+            await self.session.commit()
         grouped: dict[str, list[TestPlanOrm]] = defaultdict(list)
         for row in await self.plans.all():
             grouped[row.plan_id].append(row)
