@@ -29,6 +29,7 @@ from app.service.production.cluster import post_production, sim_mode
 from app.service.production.mapping import batch_out, model_out, production_out, stat_out
 from app.service.production.rules import needs_dispatch, precheck, skip_reasons
 from app.service.production.sync import CatalogSync
+from app.service.test_plan.cluster import ingest_cluster_plans
 from app.service.realtime.publish import push_batch, push_production
 
 STATES = {"running", "done", "stopped"}
@@ -149,6 +150,7 @@ class ProductionService:
     async def _prepare(self) -> None:
         if not await self.repo.models() or not await self.repo.batches():
             await self.sync.pull()
+        await ingest_cluster_plans(self.session)
         await self.sync.refresh_stats()
         await self.session.commit()
 
