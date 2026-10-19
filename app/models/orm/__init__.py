@@ -1,5 +1,6 @@
 from app.models.orm.alarm import AiCallOrm, AlarmOrm, AttributionOrm, AuditOrm
 from app.models.orm.base import Base
+from app.models.orm.compensation import CompHistoryOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.plan import PlanDispatchOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
@@ -12,6 +13,7 @@ __all__ = [
     "AlarmOrm",
     "AttributionOrm",
     "AuditOrm",
+    "CompHistoryOrm",
     "Base",
     "MachineOrm",
     "PlanDispatchOrm",
