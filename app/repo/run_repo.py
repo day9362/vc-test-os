@@ -133,6 +133,12 @@ class RunRepo:
         stmt = stmt.order_by(RunSampleOrm.t_s)
         return list((await self.session.execute(stmt)).scalars().all())
 
+    async def recent_completed(self, fleet_ids: list[str] | None = None, limit: int = 2000) -> list[RunOrm]:
+        stmt = select(RunOrm).where(RunOrm.status == "COMPLETED", RunOrm.keep_result.is_(True)).order_by(RunOrm.ended_at.desc()).limit(limit)
+        if fleet_ids:
+            stmt = stmt.where(RunOrm.machine_id.in_(fleet_ids))
+        return list((await self.session.execute(stmt)).scalars().all())
+
     async def list_by_batches(self, batch_ids: list[str], fleet_ids: list[str] | None = None) -> list[RunOrm]:
         if not batch_ids:
             return []

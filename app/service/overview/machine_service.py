@@ -1,11 +1,13 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.machine import MachineOut, SlotCurveOut
 from app.models.orm.run import RunOrm
 from app.repo.machine_repo import MachineRepo
 from app.repo.run_repo import RunRepo
 from app.service.overview.mapping import machine_entity, machine_out
+from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
 
 
 class MachineService:
@@ -16,6 +18,11 @@ class MachineService:
 
     async def list_machines(self) -> list[MachineOut]:
         rows = await self.machines.list_with_slots()
+        if settings.cluster_base_url:
+            fleet = fleet_machine_ids() or await refresh_fleet()
+            if fleet:
+                allowed = set(fleet)
+                rows = [(machine, slots) for machine, slots in rows if machine.machine_id in allowed]
         recent = await self.runs.recent_by_machine()
         return [machine_out(machine_entity(machine, slots, recent.get(machine.machine_id, []))) for machine, slots in rows]
 

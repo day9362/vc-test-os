@@ -1,9 +1,10 @@
+import asyncio
 import json
+import time
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.clock import now_ms
 from app.core.errors import AppError
 from app.models.dto.compensation import (
     ChannelBiasOut,
@@ -11,6 +12,7 @@ from app.models.dto.compensation import (
     CompensationIn,
     CompensationOut,
     CompensationWriteOut,
+    DriftItemOut,
     DriftListOut,
     HistoryItemOut,
     HistoryPageOut,
@@ -18,26 +20,41 @@ from app.models.dto.compensation import (
     SuggestionOut,
 )
 from app.models.entity.user import UserEntity
+from app.core.config import settings
 from app.repo.audit_repo import AuditRepo
 from app.repo.compensation_repo import CompensationRepo
 from app.repo.machine_repo import MachineRepo
-from app.service.compensation.bias import estimate_channel_bias
+from app.repo.run_repo import RunRepo
+from app.service.compensation.bias import estimate_channel_bias, is_golden
 from app.service.compensation.cluster import cluster_json
+from app.service.runs.cluster_ingest import fleet_machine_ids, ingest_run_list, refresh_fleet
+
+_last_ingest = 0.0
 
 
 class CompensationService:
     def __init__(self, session: AsyncSession, redis: Redis | None = None):
         self.session = session
         self.machines = MachineRepo(session)
+        self.runs = RunRepo(session)
         self.history = CompensationRepo(session)
         self.audit = AuditRepo(session)
         self.redis = redis
 
     async def channel_bias(self, machine_id: str) -> ChannelBiasOut:
-        found = await self.machines.get_with_slots(machine_id)
-        if found is None:
-            raise AppError(404, "NOT_FOUND", f"机台 {machine_id} 不存在")
-        return estimate_channel_bias(machine_id, now_ms())
+        await self._require(machine_id)
+        await self._ingest()
+        rows = await self.runs.recent_completed(fleet_machine_ids() or None)
+        golden = [
+            (row.machine_id, int(row.ended_at or 0), row.result if isinstance(row.result, dict) else None)
+            for row in rows
+            if is_golden(row.serial_number, row.batch_id)
+        ]
+        pieces = golden or [
+            (row.machine_id, int(row.ended_at or 0), row.result if isinstance(row.result, dict) else None)
+            for row in rows
+        ]
+        return estimate_channel_bias(machine_id, pieces)
 
     async def get_compensation(self, machine_id: str) -> CompensationOut:
         await self._require(machine_id)
@@ -50,19 +67,13 @@ class CompensationService:
             return CompensationWriteOut.model_validate(cached)
         if body.mode not in {"add", "set"}:
             raise AppError(422, "VALIDATION_ERROR", "参数校验失败", {"issues": [{"field": "mode", "message": "mode 只能是 add 或 set"}]})
-        if not body.compensation:
-            raise AppError(422, "VALIDATION_ERROR", "参数校验失败", {"issues": [{"field": "compensation", "message": "compensation 不能为空"}]})
+        if body.mode == "add" and not body.compensation:
+            raise AppError(422, "VALIDATION_ERROR", "参数校验失败", {"issues": [{"field": "compensation", "message": "叠加写入至少要有一个通道"}]})
         await self._require(machine_id)
         incoming = [item.model_dump() for item in body.compensation]
-        channels = incoming
-        if body.mode == "add":
-            current = {item.channel: item.value for item in (await self.get_compensation(machine_id)).items}
-            for item in incoming:
-                current[item["channel"]] = round(current.get(item["channel"], 0) + item["value"], 4)
-            channels = [{"channel": channel, "value": value} for channel, value in current.items()]
         payload = {"mode": body.mode, "compensation": incoming}
-        upstream = await cluster_json("PUT", f"/machines/{machine_id}/compensation", {"mode": body.mode, "channels": channels})
-        items = self._items(upstream) or [CompChannelOut(**row) for row in channels]
+        upstream = await cluster_json("PUT", f"/machines/{machine_id}/compensation", {"mode": body.mode, "channels": incoming})
+        items = self._items(upstream) or [CompChannelOut(**row) for row in incoming]
         audit_id = self.audit.record(user.user_id, "compensation.write", machine_id, payload, upstream if isinstance(upstream, dict) else {"ok": True})
         self.history.record(user.user_id, machine_id, body.mode, incoming, audit_id)
         out = CompensationWriteOut(audit_id=audit_id, items=items)
@@ -105,7 +116,24 @@ class CompensationService:
 
     async def drifts(self, machine_id: str) -> DriftListOut:
         await self._require(machine_id)
-        return DriftListOut(items=[], supported=False)
+        if not settings.cluster_base_url:
+            return DriftListOut(items=[], supported=False)
+        payload = await cluster_json("GET", f"/machines/{machine_id}/drifts")
+        rows = payload.get("drifts") or payload.get("items") if isinstance(payload, dict) else payload
+        items = []
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            items.append(DriftItemOut(
+                drift_id=str(row.get("drift_id") or ""),
+                machine_id=str(row.get("machine_id") or machine_id),
+                channel=str(row.get("channel") or ""),
+                kind=str(row.get("kind") or ""),
+                value=float(row.get("value") or 0),
+                step_at=float(row.get("step_at") or 0),
+                current=float(row.get("current") or 0),
+            ))
+        return DriftListOut(items=items, supported=True)
 
     def _items(self, payload: dict | list) -> list[CompChannelOut]:
         raw = payload if isinstance(payload, list) else payload.get("channels") or payload.get("items") or payload.get("compensation") or []
@@ -124,8 +152,24 @@ class CompensationService:
             return
         await self.redis.set(f"idem:{key}", json.dumps(body.model_dump()), ex=600)
 
+    async def _ingest(self) -> None:
+        global _last_ingest
+        if not settings.cluster_base_url:
+            return
+        now = time.monotonic()
+        if now - _last_ingest < 15:
+            return
+        _last_ingest = now
+        try:
+            await asyncio.wait_for(ingest_run_list(self.session), timeout=8)
+        except Exception:
+            pass
+
     async def _require(self, machine_id: str):
         found = await self.machines.get_with_slots(machine_id)
-        if found is None:
-            raise AppError(404, "NOT_FOUND", f"机台 {machine_id} 不存在")
-        return found
+        if found is not None:
+            return found
+        await refresh_fleet()
+        if machine_id in fleet_machine_ids():
+            return None
+        raise AppError(404, "NOT_FOUND", f"机台 {machine_id} 不存在")
