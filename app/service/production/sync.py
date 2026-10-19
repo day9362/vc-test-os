@@ -79,9 +79,13 @@ def apply_run_stats(row: BatchRecordOrm, runs: list[RunOrm], production: Product
     row.rc_sd = round(_sd(rcs), 3)
     row.top_fail = _top_fail(finished)
     active = production is not None and production.active and production.batch_id == row.batch_id
-    if not row.remaining_locked and row.count:
-        row.remaining = max(row.count - row.tested, 0)
-    still_open = row.remaining > 0 and not (row.count and row.tested >= row.count)
+    count = int(row.count or 0)
+    tested = int(row.tested or 0)
+    row.count = count
+    row.tested = tested
+    if not row.remaining_locked and count:
+        row.remaining = max(count - tested, 0)
+    still_open = int(row.remaining or 0) > 0 and not (count and tested >= count)
     if active and still_open:
         row.state = "running"
         row.ended_at = None
@@ -177,7 +181,7 @@ class CatalogSync:
             else:
                 row.remaining_locked = False
                 if row.count:
-                    row.remaining = max(row.count - row.tested, 0)
+                    row.remaining = max(int(row.count or 0) - int(row.tested or 0), 0)
             await self.repo.save_batch(row)
 
     async def _new_counts(self) -> dict[str, int]:

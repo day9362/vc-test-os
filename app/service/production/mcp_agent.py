@@ -49,11 +49,24 @@ def stop_args(batch_id: str) -> dict:
 
 
 async def start_on_device(body: ProductionIn) -> dict:
-    return await call_test(start_args(body))
+    if settings.anthropic_api_key and settings.anthropic_base_url:
+        try:
+            return await call_test(start_args(body))
+        except McpCallError:
+            pass
+    from app.service.production.cluster import post_production
+    payload = {key: value for key, value in start_args(body).items() if key not in {"action", "enable"} and value is not None}
+    return await post_production("/fleet/production/start", payload) or {}
 
 
 async def stop_on_device(batch_id: str) -> dict:
-    return await call_test(stop_args(batch_id))
+    if settings.anthropic_api_key and settings.anthropic_base_url:
+        try:
+            return await call_test(stop_args(batch_id))
+        except McpCallError:
+            pass
+    from app.service.production.cluster import post_production
+    return await post_production("/fleet/production/stop", {"batch_id": batch_id}) or {}
 
 
 async def call_test(arguments: dict) -> dict:

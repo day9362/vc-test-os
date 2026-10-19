@@ -17,9 +17,6 @@ class AuthService:
             raise AppError(401, "UNAUTHORIZED", "用户名或密码错误")
         token, jti, exp = issue_token(user.user_id, user.name, user.role)
         ttl = max(1, exp - _now())
-        previous = await self.redis.get(f"auth:user:{user.user_id}")
-        if previous:
-            await self.redis.delete(f"auth:session:{previous}")
         await self.redis.set(f"auth:session:{jti}", user.user_id, ex=ttl)
         await self.redis.set(f"auth:user:{user.user_id}", jti, ex=ttl)
         return token

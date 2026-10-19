@@ -11,7 +11,7 @@ async def post_cluster(path: str, body: dict | None) -> dict | None:
         return None
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
     try:
-        async with httpx.AsyncClient(timeout=settings.cluster_timeout_s) as client:
+        async with httpx.AsyncClient(timeout=max(settings.cluster_timeout_s, 20)) as client:
             response = await client.post(f"{base}{path}", headers=headers, json=body)
     except httpx.TimeoutException as exc:
         raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
