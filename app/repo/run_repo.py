@@ -53,18 +53,27 @@ class RunRepo:
         q: str | None,
         start: int | None,
         end: int | None,
+        exclude_seed: bool = False,
+        fleet_ids: list[str] | None = None,
     ) -> Select:
         stmt = select(RunOrm)
+        if exclude_seed:
+            stmt = stmt.where(RunOrm.batch_id != "B-tb172-seed", ~RunOrm.run_id.like("%-seed"))
+        if fleet_ids:
+            stmt = stmt.where(RunOrm.machine_id.in_(fleet_ids))
         if machine_id:
             stmt = stmt.where(RunOrm.machine_id == machine_id)
         if batch_id:
             stmt = stmt.where(RunOrm.batch_id == batch_id)
         if passed_is_null:
-            stmt = stmt.where(RunOrm.passed.is_(None))
             if not status:
                 stmt = stmt.where(RunOrm.status.in_(("ABORTED", "FAULT")))
-        elif passed is not None:
-            stmt = stmt.where(RunOrm.passed == passed)
+            else:
+                stmt = stmt.where(RunOrm.passed.is_(None))
+        elif passed is True:
+            stmt = stmt.where(RunOrm.passed.is_(True), RunOrm.status == "COMPLETED")
+        elif passed is False:
+            stmt = stmt.where(RunOrm.passed.is_(False), RunOrm.status == "COMPLETED")
         if status:
             stmt = stmt.where(RunOrm.status == status)
         if q:
@@ -88,8 +97,10 @@ class RunRepo:
         end: int | None,
         cursor: str | None,
         limit: int,
+        exclude_seed: bool = False,
+        fleet_ids: list[str] | None = None,
     ) -> tuple[list[RunOrm], str | None]:
-        stmt = self._filtered(machine_id, batch_id, passed, passed_is_null, status, q, start, end)
+        stmt = self._filtered(machine_id, batch_id, passed, passed_is_null, status, q, start, end, exclude_seed, fleet_ids)
         if cursor:
             mark_time, mark_id = cursor.split(":", 1)
             stmt = stmt.where(
@@ -109,8 +120,8 @@ class RunRepo:
     async def get(self, run_id: str) -> RunOrm | None:
         return await self.session.get(RunOrm, run_id)
 
-    async def list_for_export(self, batch_id: str | None, start: int | None, end: int | None) -> list[RunOrm]:
-        stmt = self._filtered(None, batch_id, None, False, None, None, start, end)
+    async def list_for_export(self, batch_id: str | None, start: int | None, end: int | None, exclude_seed: bool = False, fleet_ids: list[str] | None = None) -> list[RunOrm]:
+        stmt = self._filtered(None, batch_id, None, False, None, None, start, end, exclude_seed, fleet_ids)
         return list(
             (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc()))).scalars().all()
         )
