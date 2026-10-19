@@ -1,13 +1,16 @@
+import asyncio
 import csv
 import io
 from time import monotonic
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.models.dto.run import RunDetailOut, RunPageOut, RunSamplesOut
+from app.models.dto.run import RunDetailOut, RunGroundTruthOut, RunPageOut, RunSamplesOut
 from app.repo.run_repo import RunRepo
+from app.repo.settings_repo import SettingsRepo
 from app.service.runs.cluster_ingest import fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
 
@@ -100,6 +103,37 @@ class RunService:
             deltas=deltas,
         )
 
+    async def get_ground_truth(self, run_id: str) -> RunGroundTruthOut:
+        payload = ((await SettingsRepo(self.session).get_or_create()).payload) or {}
+        sim = payload.get("sim") or {}
+        if payload.get("source") != "sim" or not sim.get("use_ground_truth"):
+            raise AppError(404, "NOT_FOUND", "ground-truth 仅仿真且打开评估开关时可用")
+        row = await self.runs.get(run_id)
+        fleet = fleet_machine_ids()
+        if row is not None and fleet and row.machine_id not in fleet:
+            raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不在当前现场机台")
+        base = ((sim.get("base_url") or settings.cluster_base_url) or "").strip().rstrip("/")
+        if not base:
+            raise AppError(404, "NOT_FOUND", "ground-truth 仅仿真且打开评估开关时可用")
+        timeout = max(float((payload.get("cluster") or {}).get("timeout_s") or settings.cluster_timeout_s), 30)
+        try:
+            response = await asyncio.to_thread(_get_ground_truth, f"{base}/runs/{run_id}/ground-truth", timeout)
+        except httpx.TimeoutException as exc:
+            raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
+        except httpx.HTTPError as exc:
+            raise AppError(502, "CLUSTER_ERROR", "集群请求失败", {"upstream": str(exc)}) from exc
+        if response.status_code == 404:
+            raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 没有 ground-truth")
+        if response.status_code >= 400:
+            raise AppError(502, "CLUSTER_ERROR", "集群返回错误", {"upstream": response.text[:500]})
+        try:
+            body = response.json()
+        except Exception as exc:
+            raise AppError(502, "CLUSTER_ERROR", "集群返回无法解析") from exc
+        if not isinstance(body, dict):
+            raise AppError(502, "CLUSTER_ERROR", "集群返回无法解析")
+        return RunGroundTruthOut.model_validate(body)
+
     async def _ingest(self) -> None:
         global _last_ingest
         if not settings.cluster_base_url:
@@ -138,3 +172,9 @@ class RunService:
                 row.ended_at,
             ])
         return buffer.getvalue()
+
+
+def _get_ground_truth(url: str, timeout: float) -> httpx.Response:
+    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False, headers=headers) as client:
+        return client.get(url)

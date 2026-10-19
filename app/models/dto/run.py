@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RunOut(BaseModel):
@@ -42,3 +42,17 @@ class RunSamplesOut(BaseModel):
     duration_s: int | None
     points: list[RunSamplePointOut]
     deltas: dict[str, float] = Field(default_factory=dict)
+
+
+class RunGroundTruthOut(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    run_id: str
+    model: str | None = None
+    grade: str | None = None
+    quality: float | None = None
+    contact_quality: float | None = None
+    defects: list[dict] = Field(default_factory=list)
+    window_deltas: list[dict] = Field(default_factory=list)
+    fault_kinds: list | None = None
+    scenario_id: str | None = None
