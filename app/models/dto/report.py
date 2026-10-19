@@ -70,3 +70,13 @@ class ReportDataOut(BaseModel):
     fail_pareto: list[FailParetoOut]
     delta_profile: DeltaProfileOut
     compare: list[BatchCompareOut]
+
+
+class ReportExportIn(BaseModel):
+    batch_ids: list[str]
+    figure_ids: list[str] = []
+    format: str = "pdf"
+
+
+class ReportExportOut(BaseModel):
+    url: str
