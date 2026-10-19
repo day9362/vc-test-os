@@ -132,3 +132,9 @@ class RunRepo:
             stmt = stmt.where(RunSampleOrm.t_s > since)
         stmt = stmt.order_by(RunSampleOrm.t_s)
         return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_by_batches(self, batch_ids: list[str]) -> list[RunOrm]:
+        if not batch_ids:
+            return []
+        stmt = select(RunOrm).where(RunOrm.batch_id.in_(batch_ids)).order_by(RunOrm.ended_at.asc())
+        return list((await self.session.execute(stmt)).scalars().all())
