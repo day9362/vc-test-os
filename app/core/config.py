@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://vcos:vcos@127.0.0.1:5432/vcos"
+    database_search_path: str = ""
     redis_url: str = "redis://127.0.0.1:6379/0"
     jwt_secret: str = "vc-test-os-dev-secret"
     jwt_expire_minutes: int = 720
