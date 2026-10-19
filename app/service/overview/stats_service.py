@@ -66,8 +66,9 @@ class StatsService:
         )
 
     async def agg5m(self, start: int | None, end: int | None) -> list[Agg5mOut]:
-        rows = await self.stats.agg_between(start, end)
-        return [Agg5mOut(bucket=row.bucket, tests=row.tests, passed=row.passed, failed=row.failed, aborted=row.aborted, rc_mean=row.rc_mean, dt01_mean=row.dt01_mean) for row in rows]
+        end = now_ms() if end is None else end
+        start = end - 8 * HOUR_MS if start is None else start
+        return self._buckets(await self.runs.ended_between(start, end, await self._fleet_ids()), start, end)
 
     async def anomaly_trend(self, hours: int) -> AnomalyTrendOut:
         if hours < 1 or hours > 48:
@@ -135,9 +136,41 @@ class StatsService:
             return None
         return fleet_machine_ids() or await refresh_fleet() or None
 
+    def _buckets(self, rows, start: int, end: int) -> list[Agg5mOut]:
+        step = 300_000
+        first = start - (start % step)
+        grouped: dict[int, list] = {}
+        cursor = first
+        while cursor < end:
+            grouped[cursor] = []
+            cursor += step
+        for row in rows:
+            key = row.ended_at - (row.ended_at % step)
+            if key in grouped:
+                grouped[key].append(row)
+        out = []
+        for bucket in sorted(grouped):
+            group = grouped[bucket]
+            tests = len(group)
+            passed = sum(1 for item in group if item.passed is True)
+            failed = sum(1 for item in group if item.passed is False and item.status == "COMPLETED")
+            aborted = sum(1 for item in group if item.status in {"ABORTED", "FAULT"})
+            rc_values = [item.rc for item in group if item.rc is not None]
+            dt_values = [item.dt01 for item in group if item.dt01 is not None]
+            out.append(Agg5mOut(
+                bucket=bucket,
+                tests=tests,
+                passed=passed,
+                failed=failed,
+                aborted=aborted,
+                rc_mean=round(sum(rc_values) / len(rc_values), 3) if rc_values else 0,
+                dt01_mean=round(sum(dt_values) / len(dt_values), 3) if dt_values else 0,
+            ))
+        return out
+
     async def _window(self, start: int, end: int) -> tuple[int, float]:
-        rows = await self.stats.agg_between(start, end)
-        tests = sum(row.tests for row in rows)
-        passed = sum(row.passed for row in rows)
+        rows = await self.runs.ended_between(start, end, await self._fleet_ids())
+        tests = len(rows)
+        passed = sum(1 for row in rows if row.passed is True)
         rate = round(passed / tests * 100, 2) if tests else 0
         return tests, rate

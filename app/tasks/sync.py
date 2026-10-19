@@ -14,6 +14,7 @@ from app.service.overview.attribution import build_attribution
 from app.service.overview.hub import hub
 from app.service.overview.machine_service import MachineService
 from app.service.overview.mapping import alarm_entity, alarm_out
+from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
 
 log = logging.getLogger(__name__)
 
@@ -62,13 +63,13 @@ async def rollup_agg(session: AsyncSession) -> None:
     """定时任务：把当前 5 分钟桶里新结束的测试记进 agg_5m。"""
     bucket = now_ms()
     bucket -= bucket % 300_000
+    runs = (await session.execute(select(RunOrm).where(RunOrm.ended_at >= bucket, RunOrm.status != "RUNNING"))).scalars().all()
+    if not runs:
+        return
     row = await session.get(Agg5mOrm, bucket)
     if row is None:
         row = Agg5mOrm(bucket=bucket, tests=0, passed=0, failed=0, aborted=0, rc_mean=0, dt01_mean=0)
         session.add(row)
-    runs = (await session.execute(select(RunOrm).where(RunOrm.ended_at >= bucket, RunOrm.status != "RUNNING"))).scalars().all()
-    if not runs:
-        return
     row.tests = len(runs)
     row.passed = sum(1 for run in runs if run.passed is True)
     row.failed = sum(1 for run in runs if run.passed is False and run.status == "COMPLETED")
@@ -85,8 +86,13 @@ async def rollup_agg(session: AsyncSession) -> None:
 
 async def scan_alarms(session: AsyncSession) -> None:
     """定时任务：根据机台和槽位状态生成告警，并触发归因。"""
-    machines = (await session.execute(select(MachineOrm))).scalars().all()
-    slots = (await session.execute(select(SlotOrm))).scalars().all()
+    machines = list((await session.execute(select(MachineOrm))).scalars().all())
+    slots = list((await session.execute(select(SlotOrm))).scalars().all())
+    fleet = fleet_machine_ids() or await refresh_fleet()
+    if fleet:
+        allowed = set(fleet)
+        machines = [machine for machine in machines if machine.machine_id in allowed]
+        slots = [slot for slot in slots if slot.machine_id in allowed]
     open_keys = {(row.machine_id, row.code, row.slot_index) for row in (await session.execute(select(AlarmOrm).where(AlarmOrm.acked.is_(False)))).scalars()}
     created: list[AlarmOrm] = []
     for machine in machines:

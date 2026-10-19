@@ -8,18 +8,20 @@ class AlarmRepo:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    def _filtered(self, acked: bool | None, machine_id: str | None, level: str | None) -> Select:
+    def _filtered(self, acked: bool | None, machine_id: str | None, level: str | None, fleet_ids: list[str] | None = None) -> Select:
         stmt = select(AlarmOrm)
         if acked is not None:
             stmt = stmt.where(AlarmOrm.acked == acked)
         if machine_id:
             stmt = stmt.where(AlarmOrm.machine_id == machine_id)
+        elif fleet_ids:
+            stmt = stmt.where(AlarmOrm.machine_id.in_(fleet_ids))
         if level:
             stmt = stmt.where(AlarmOrm.level == level)
         return stmt
 
-    async def page(self, acked: bool | None, machine_id: str | None, level: str | None, cursor: str | None, limit: int) -> tuple[list[AlarmOrm], str | None]:
-        stmt = self._filtered(acked, machine_id, level)
+    async def page(self, acked: bool | None, machine_id: str | None, level: str | None, cursor: str | None, limit: int, fleet_ids: list[str] | None = None) -> tuple[list[AlarmOrm], str | None]:
+        stmt = self._filtered(acked, machine_id, level, fleet_ids)
         if cursor:
             mark_time, mark_id = cursor.split(":", 1)
             stmt = stmt.where((AlarmOrm.time < int(mark_time)) | ((AlarmOrm.time == int(mark_time)) & (AlarmOrm.id < mark_id)))
