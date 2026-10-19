@@ -34,6 +34,7 @@ from app.api.test_plan.plan_detail import router as plan_detail_router
 from app.api.runs.list import router as runs_list_router
 from app.api.runs.detail import router as runs_detail_router
 from app.api.runs.samples import router as runs_samples_router
+from app.api.runs.ground_truth import router as runs_ground_truth_router
 from app.api.runs.export import router as runs_export_router
 from app.api.reports.data import router as reports_data_router
 from app.api.reports.export import router as reports_export_router
@@ -82,6 +83,7 @@ api_router.include_router(delete_draft_router)
 api_router.include_router(plan_detail_router)
 api_router.include_router(runs_list_router)
 api_router.include_router(runs_samples_router)
+api_router.include_router(runs_ground_truth_router)
 api_router.include_router(runs_detail_router)
 api_router.include_router(runs_export_router)
 api_router.include_router(reports_data_router)
