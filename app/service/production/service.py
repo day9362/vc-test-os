@@ -25,7 +25,8 @@ from app.repo.production_repo import ProductionRepo
 from app.repo.test_plan_repo import TestPlanRepo
 from app.repo.audit_repo import AuditRepo
 from app.repo.machine_repo import MachineRepo
-from app.service.production.cluster import post_production, sim_mode
+from app.service.production.cluster import sim_mode
+from app.service.production.mcp_agent import McpCallError, start_on_device, stop_on_device
 from app.service.production.mapping import batch_out, model_out, production_out, stat_out
 from app.service.production.rules import needs_dispatch, precheck, skip_reasons
 from app.service.production.sync import CatalogSync
@@ -94,7 +95,10 @@ class ProductionService:
         current = await self.repo.production()
         if current is not None:
             raise AppError(409, "CONFLICT", "已有连续生产在进行")
-        upstream = await post_production("/fleet/production/start", body.model_dump())
+        try:
+            upstream = await start_on_device(body)
+        except McpCallError as exc:
+            raise AppError(502, "CLUSTER_ERROR", str(exc), {"upstream": exc.detail}) from exc
         accepted, skipped = _outcome(upstream, body.machine_ids, skip_reasons(body, context["machines"]))
         batch_id = _batch_id(upstream, body)
         if not batch_id:
@@ -131,7 +135,10 @@ class ProductionService:
             raise AppError(404, "NOT_FOUND", "批次不存在")
         if not running:
             raise AppError(409, "CONFLICT", "该批次不在连续生产中")
-        await post_production("/fleet/production/stop", {"batch_id": batch_id})
+        try:
+            await stop_on_device(batch_id)
+        except McpCallError as exc:
+            raise AppError(502, "CLUSTER_ERROR", str(exc), {"upstream": exc.detail}) from exc
         if current is not None and current.batch_id == batch_id:
             current.active = False
         if row is not None:

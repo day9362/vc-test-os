@@ -2,7 +2,6 @@ import httpx
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.service.machines.cluster import post_cluster
 
 
 def items(body: object, *keys: str) -> list[dict]:
@@ -44,7 +43,3 @@ async def get_cluster(path: str) -> dict | list | None:
 
 def sim_mode() -> bool:
     return "sim" in settings.cluster_base_url.lower()
-
-
-async def post_production(path: str, body: dict) -> dict | None:
-    return await post_cluster(path, body)
