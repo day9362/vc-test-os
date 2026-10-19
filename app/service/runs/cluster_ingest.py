@@ -142,10 +142,41 @@ def _apply_payload(row: RunOrm, payload: dict, *, fill_result: bool) -> None:
     elif not row.batch_id:
         row.batch_id = ""
     ended = payload.get("ended_at")
-    if isinstance(ended, (int, float)):
+    if isinstance(ended, (int, float)) and ended > 0:
         row.ended_at = int(ended)
     elif not row.ended_at:
         row.ended_at = now_ms()
+
+
+def batch_of_serial(serial: str, batch_ids: list[str]) -> str:
+    serial = (serial or "").strip()
+    if not serial:
+        return ""
+    matches = [batch_id for batch_id in batch_ids if batch_id and (serial == batch_id or serial.startswith(batch_id + "-"))]
+    return max(matches, key=len) if matches else ""
+
+
+def _parse_batch_ids(body: object) -> list[str]:
+    items = []
+    if isinstance(body, dict):
+        items = body.get("batches") or body.get("items") or []
+    elif isinstance(body, list):
+        items = body
+    ids = []
+    for item in items:
+        if isinstance(item, dict) and item.get("batch_id"):
+            ids.append(str(item["batch_id"]))
+    return ids
+
+
+async def refresh_batch_ids() -> list[str]:
+    if not settings.cluster_base_url:
+        return []
+    try:
+        body = await asyncio.to_thread(_get, "/products/batches")
+        return _parse_batch_ids(body)
+    except Exception:
+        return []
 
 
 async def ingest_run_list(session: AsyncSession) -> int:
@@ -154,6 +185,7 @@ async def ingest_run_list(session: AsyncSession) -> int:
     fleet = await refresh_fleet()
     if not fleet:
         return 0
+    known_batches = await refresh_batch_ids()
     try:
         body = await asyncio.to_thread(_get, "/runs")
     except Exception:
@@ -176,6 +208,8 @@ async def ingest_run_list(session: AsyncSession) -> int:
             row = RunOrm(run_id=run_id, machine_id="", slot_index=0, serial_number="", plan_id="", plan_version=0, status="COMPLETED", passed=None, fail_items=[], keep_result=True, rc=None, dt01=None, batch_id="", ended_at=0, result={})
             session.add(row)
         _apply_payload(row, payload, fill_result=bool(payload.get("result")))
+        if not row.batch_id:
+            row.batch_id = batch_of_serial(row.serial_number, known_batches)
         count += 1
     await session.commit()
     _schedule_metrics_backfill()

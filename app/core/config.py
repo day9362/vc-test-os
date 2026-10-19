@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     degraded_alarm: bool = True
     drift_c: float = 0.15
     sentinel_as_data_anomaly: bool = True
+    reports_dir: str = "data/reports"
 
 
 settings = Settings()

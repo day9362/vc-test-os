@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 import app.models.orm  # noqa: F401
 from app.api.router import api_router
@@ -12,6 +13,7 @@ from app.core.errors import AppError
 from app.core.redis import close_redis
 from app.models.orm.base import Base
 from app.seed import seed
+from app.service.reports.store import reports_dir
 from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 
@@ -35,6 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(api_router, prefix="/api/v1")
+app.mount("/files/reports", StaticFiles(directory=str(reports_dir())), name="report_files")
 
 
 @app.exception_handler(AppError)
