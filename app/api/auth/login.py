@@ -13,5 +13,5 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth/login", response_model=TokenOut)
 async def login(body: LoginIn, session: AsyncSession = Depends(get_session), redis: Redis = Depends(get_redis)) -> TokenOut:
-    token = await AuthService(UserRepo(session), redis).login(body.username, body.password)
+    token = await AuthService(UserRepo(session), redis).login(body.tenant, body.username, body.password)
     return TokenOut(token=token)

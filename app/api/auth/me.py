@@ -9,4 +9,4 @@ router = APIRouter(tags=["auth"])
 
 @router.get("/me", response_model=MeOut)
 async def me(user: UserEntity = Depends(current_user)) -> MeOut:
-    return MeOut(user_id=user.user_id, name=user.name, role=user.role)
+    return MeOut(user_id=user.user_id, name=user.name, role=user.role, tenant_id=user.tenant_id, tenant_name=user.tenant_name)
