@@ -1,8 +1,10 @@
 import logging
 from collections import defaultdict
+from time import monotonic
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_ms
 from app.core.errors import AppError
 from app.models.orm.production import BatchRecordOrm, ProductModelOrm, ProductionOrm
 from app.models.orm.run import RunOrm
@@ -15,6 +17,8 @@ log = logging.getLogger(__name__)
 _ready = False
 _batch_seen: dict[str, tuple] = {}
 _production_seen: tuple | None = None
+_fleet_queue_at = 0.0
+_fleet_queue: int | None = None
 
 
 def _mean(values: list[float]) -> float:
@@ -121,6 +125,8 @@ class CatalogSync:
     async def refresh_stats(self) -> tuple[dict | None, list[dict]]:
         grouped = await self.repo.runs_grouped()
         production = await self.repo.production_row()
+        if production.active and await fleet_queue_remaining() == 0:
+            _close_stuck_production(production, grouped.get(production.batch_id, []))
         for row in await self.repo.batches():
             apply_run_stats(row, grouped.get(row.batch_id, []), production)
         if production.active:
@@ -225,6 +231,41 @@ class CatalogSync:
         row.queue_remaining = int(payload.get("queue_remaining") or 0)
         row.plan_id = str(payload.get("plan_id") or "")
         row.plan_version = int(payload.get("plan_version") or 0)
+
+
+def _close_stuck_production(production: ProductionOrm, runs: list[RunOrm]) -> None:
+    """集群没有连续生产队列时，结束本地仍标着执行中的批次。"""
+    production.active = False
+    production.queue_remaining = 0
+    stamp = now_ms()
+    for run in runs:
+        if run.status != "RUNNING":
+            continue
+        run.status = "ABORTED"
+        run.ended_at = run.ended_at or stamp
+
+
+async def fleet_queue_remaining() -> int | None:
+    """机台队列合计。读不到集群时返回 None，避免把正在下发的任务误判成结束。"""
+    global _fleet_queue_at, _fleet_queue
+    if _fleet_queue is not None and monotonic() - _fleet_queue_at < 5:
+        return _fleet_queue
+    try:
+        payload = await get_cluster("/fleet")
+    except AppError as exc:
+        log.info("sync fleet queue skipped: %s", exc.message)
+        return None
+    if payload is None:
+        return None
+    machines = items(payload, "machines", "items")
+    if not machines and isinstance(payload, list):
+        machines = [item for item in payload if isinstance(item, dict)]
+    if not machines:
+        return None
+    queued = sum(int(item.get("queue_remaining") or 0) for item in machines)
+    _fleet_queue = queued
+    _fleet_queue_at = monotonic()
+    return queued
 
 
 def _production_snapshot(row: ProductionOrm) -> dict | None:
