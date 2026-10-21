@@ -7,7 +7,7 @@ from app.models.orm.production import BatchRecordOrm, ProductModelOrm, Productio
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
 from app.models.orm.settings import SettingsOrm
 from app.models.orm.test_plan import TestPlanOrm
-from app.models.orm.user import UserOrm
+from app.models.orm.user import TenantOrm, UserOrm
 
 __all__ = [
     "AiCallOrm",
@@ -26,6 +26,7 @@ __all__ = [
     "RunSampleOrm",
     "SettingsOrm",
     "SlotOrm",
+    "TenantOrm",
     "TestPlanOrm",
     "UserOrm",
 ]

@@ -1,9 +1,9 @@
 import math
 from time import time
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.core.security import hash_password
 from app.models.entity.user import UserEntity
 from app.models.orm.alarm import AlarmOrm, AttributionOrm
@@ -11,7 +11,7 @@ from app.models.orm.test_plan import TestPlanOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.plan import PlanDispatchOrm
 from app.models.orm.run import Agg5mOrm, RunOrm, RunSampleOrm
-from app.models.orm.user import UserOrm
+from app.models.orm.user import TenantOrm, UserOrm
 from app.repo.user_repo import UserRepo
 
 TEMP = ["T0", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T12", "T13", "T14", "Ta", "T_air", "T_motor_up", "T_motor_down"]
@@ -47,12 +47,46 @@ def _now() -> int:
     return int(time() * 1000)
 
 
+ACCOUNTS = (
+    ("line-a", "A 产线", "limingyuan", "李明远", "test", "changeme"),
+    ("line-a", "A 产线", "admin", "产线管理员", "admin", "changeme"),
+    ("line-b", "B 产线", "wanggong", "王工", "process", "changeme"),
+    ("lab", "实验室", "zhougong", "周工", "quality", "changeme"),
+)
+
+
+async def ensure_user_tenant_column() -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) NOT NULL DEFAULT 'line-a'"
+        ))
+
+
+async def ensure_accounts(session) -> None:
+    seen = set()
+    for tenant_id, tenant_name, *_rest in ACCOUNTS:
+        if tenant_id in seen:
+            continue
+        seen.add(tenant_id)
+        if await session.get(TenantOrm, tenant_id) is None:
+            session.add(TenantOrm(tenant_id=tenant_id, name=tenant_name))
+    for tenant_id, _tenant_name, user_id, name, role, password in ACCOUNTS:
+        row = await session.get(UserOrm, user_id)
+        if row is None:
+            await UserRepo(session).add(UserEntity(user_id, user_id, name, role, hash_password(password), tenant_id))
+            continue
+        row.tenant_id = tenant_id
+        row.name = name
+        row.role = role
+
+
 async def seed() -> None:
     async with SessionLocal() as session:
-        exists = (await session.execute(select(func.count()).select_from(UserOrm))).scalar_one()
-        if exists:
+        before = (await session.execute(select(func.count()).select_from(UserOrm))).scalar_one()
+        await ensure_accounts(session)
+        if before:
+            await session.commit()
             return
-        await UserRepo(session).add(UserEntity("limingyuan", "limingyuan", "李明远", "test", hash_password("changeme")))
         now = _now()
         _machines(session, now)
         _plan_history(session, now)

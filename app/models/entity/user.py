@@ -8,3 +8,5 @@ class UserEntity:
     name: str
     role: str
     password_hash: str
+    tenant_id: str = "line-a"
+    tenant_name: str = ""

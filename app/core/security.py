@@ -22,10 +22,18 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(digest.hex(), digest_hex)
 
 
-def issue_token(user_id: str, name: str, role: str) -> tuple[str, str, int]:
+def issue_token(user_id: str, name: str, role: str, tenant_id: str = "", tenant_name: str = "") -> tuple[str, str, int]:
     jti = uuid4().hex
     expires = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": user_id, "name": name, "role": role, "jti": jti, "exp": expires}
+    payload = {
+        "sub": user_id,
+        "name": name,
+        "role": role,
+        "tenant_id": tenant_id,
+        "tenant_name": tenant_name,
+        "jti": jti,
+        "exp": expires,
+    }
     token = jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
     return token, jti, int(expires.timestamp())
 

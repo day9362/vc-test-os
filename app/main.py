@@ -12,7 +12,7 @@ from app.core.database import engine
 from app.core.errors import AppError
 from app.core.redis import close_redis
 from app.models.orm.base import Base
-from app.seed import seed
+from app.seed import ensure_user_tenant_column, seed
 from app.service.reports.store import reports_dir
 from app.tasks.scheduler import start_scheduler, stop_scheduler
 
@@ -21,6 +21,7 @@ from app.tasks.scheduler import start_scheduler, stop_scheduler
 async def lifespan(_: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_user_tenant_column()
     await seed()
     start_scheduler()
     yield
