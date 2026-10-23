@@ -1,10 +1,8 @@
-import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.models.dto.production import ProductionIn
-from app.service.production.mcp_agent import parse_tool_payload, start_args, stop_args
 from app.service.production.service import ProductionService
 
 
@@ -35,31 +33,6 @@ def _body() -> ProductionIn:
         auto_recover=True,
         max_count=None,
     )
-
-
-class PayloadTests(unittest.TestCase):
-    def test_start_args_go_to_vapor_chamber_test(self) -> None:
-        args = start_args(_body())
-        self.assertEqual(args["action"], "production")
-        self.assertTrue(args["enable"])
-        self.assertEqual(args["machine_ids"], ["M01", "M02"])
-        self.assertEqual(args["plan_id"], "PLAN-3f2c71d0")
-        self.assertEqual(args["plan_version"], 3)
-        self.assertEqual(args["batch_id"], "B-HVP1307G17-1-9725e9b1")
-
-    def test_stop_args_disable_production(self) -> None:
-        self.assertEqual(stop_args("B-1"), {"action": "production", "enable": False, "batch_id": "B-1"})
-
-    def test_parse_tool_payload_from_mcp_text(self) -> None:
-        text = '已经开始。\n{"ok": true, "summary": "M01 开始连续测试", "data": {"batch_id": "B-1", "accepted": ["M01"]}}'
-        payload = parse_tool_payload(text)
-        self.assertEqual(payload["ok"], True)
-        self.assertEqual(payload["data"]["batch_id"], "B-1")
-
-    def test_parse_tool_payload_from_content_blocks(self) -> None:
-        content = [{"type": "text", "text": json.dumps({"ok": False, "summary": "机台正在测试"})}]
-        payload = parse_tool_payload(content)
-        self.assertEqual(payload["ok"], False)
 
 
 class StartStopTests(unittest.IsolatedAsyncioTestCase):
@@ -97,7 +70,7 @@ class StartStopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.accepted, ["M01", "M02"])
         self.assertEqual(result.audit_id, "AUD-1")
 
-    async def test_stop_calls_device_mcp(self) -> None:
+    async def test_stop_posts_cluster_http(self) -> None:
         service = ProductionService(session=SimpleNamespace(commit=AsyncMock()), redis=None)
         batch = _batch(state="running", eta_s=1)
         current = SimpleNamespace(batch_id="B-1", active=True)
@@ -106,11 +79,11 @@ class StartStopTests(unittest.IsolatedAsyncioTestCase):
         service.repo.production = AsyncMock(return_value=current)
         service.audit.record = lambda *args, **kwargs: "AUD-2"
         service._store = AsyncMock()
-        with patch("app.service.production.service.stop_on_device", new=AsyncMock(return_value={})) as device:
+        with patch("app.service.production.service.post_production", new=AsyncMock(return_value={})) as http:
             with patch("app.service.production.service.push_production", new=AsyncMock()):
                 with patch("app.service.production.service.push_batch", new=AsyncMock()):
                     result = await service.stop("B-1", SimpleNamespace(user_id="limingyuan"), "k2")
-        device.assert_awaited_once_with("B-1")
+        http.assert_awaited_once_with("/fleet/production/stop", {"batch_id": "B-1"})
         self.assertEqual(result.audit_id, "AUD-2")
         self.assertEqual(batch.state, "stopped")
         self.assertFalse(current.active)
