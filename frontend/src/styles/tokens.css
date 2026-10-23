@@ -1,0 +1,167 @@
+/* =========================================================
+ * 设计令牌 · 三套浅色工业主题
+ * steel    钢蓝   —— 冷静、标准的产线控制台
+ * signal   信号橙 —— 高识别度的安全警示色系，适合车间大屏
+ * graphite 石墨青 —— 低疲劳的实验室/质检工作站色系
+ * 所有组件只引用语义变量，切换 data-theme 即可整体换肤
+ * ========================================================= */
+
+:root {
+  --font-sans: 'HarmonyOS Sans SC', 'MiSans', 'Microsoft YaHei UI', 'PingFang SC', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', 'SF Mono', Consolas, 'Microsoft YaHei UI', monospace;
+
+  --radius: 2px;
+  --radius-lg: 3px;
+  --bw: 1px;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 26px;
+
+  --h-ctl: 32px;
+  --h-ctl-sm: 26px;
+  --topbar-h: 52px;
+  --nav-w: 216px;
+  --nav-w-collapsed: 56px;
+
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur: 140ms;
+
+  --shadow-pop: 0 1px 0 rgba(0, 0, 0, 0.04), 0 8px 24px -6px rgba(16, 22, 29, 0.22);
+}
+
+/* ---------- 主题 1：钢蓝 Steel ---------- */
+:root,
+[data-theme='steel'] {
+  --c-bg: #e9edf1;
+  --c-bg-grid: rgba(27, 79, 156, 0.05);
+  --c-surface: #ffffff;
+  --c-surface-2: #f3f5f8;
+  --c-surface-3: #e5eaf0;
+  --c-border: #c8cfd7;
+  --c-border-strong: #8a96a3;
+  --c-text: #10161d;
+  --c-text-2: #3d4855;
+  --c-text-3: #6b7684;
+
+  --c-primary: #1b4f9c;
+  --c-primary-hover: #143e7d;
+  --c-primary-weak: #e2ebf8;
+  --c-on-primary: #ffffff;
+  --c-accent: #10161d;
+
+  --c-ok: #1d7a3c;
+  --c-ok-weak: #e1f2e6;
+  --c-warn: #a85a00;
+  --c-warn-weak: #fbefdc;
+  --c-danger: #c0262d;
+  --c-danger-weak: #fbe4e4;
+  --c-info: #0d6c91;
+  --c-info-weak: #dff0f6;
+  --c-idle: #7b8794;
+  --c-idle-weak: #eceff2;
+
+  --c-nav-bg: #f7f9fb;
+  --c-nav-active: #1b4f9c;
+  --c-topbar-bg: #ffffff;
+  --c-topbar-rule: #1b4f9c;
+  --c-focus: #2f7ae5;
+
+  --chart-1: #1b4f9c;
+  --chart-2: #0d8fa8;
+  --chart-3: #c7791a;
+  --chart-4: #6b4fb3;
+  --chart-5: #2d8a4e;
+  --chart-6: #c0262d;
+}
+
+/* ---------- 主题 2：信号橙 Signal ---------- */
+[data-theme='signal'] {
+  --c-bg: #eeebe4;
+  --c-bg-grid: rgba(26, 24, 20, 0.05);
+  --c-surface: #fffefb;
+  --c-surface-2: #f6f3ec;
+  --c-surface-3: #ebe6db;
+  --c-border: #d1c9b9;
+  --c-border-strong: #8d8474;
+  --c-text: #1a1814;
+  --c-text-2: #4a453c;
+  --c-text-3: #7a7366;
+
+  --c-primary: #c2410c;
+  --c-primary-hover: #9a330a;
+  --c-primary-weak: #fbe8db;
+  --c-on-primary: #ffffff;
+  --c-accent: #1a1814;
+
+  --c-ok: #2d7a1f;
+  --c-ok-weak: #e4f1dc;
+  --c-warn: #9a6a00;
+  --c-warn-weak: #f8efcf;
+  --c-danger: #b3141b;
+  --c-danger-weak: #f9e0df;
+  --c-info: #1d5f8a;
+  --c-info-weak: #e0ecf4;
+  --c-idle: #857d70;
+  --c-idle-weak: #efebe3;
+
+  --c-nav-bg: #f7f4ed;
+  --c-nav-active: #1a1814;
+  --c-topbar-bg: #fffefb;
+  --c-topbar-rule: #c2410c;
+  --c-focus: #e2680f;
+
+  --chart-1: #c2410c;
+  --chart-2: #1a1814;
+  --chart-3: #1d5f8a;
+  --chart-4: #b88a00;
+  --chart-5: #2d7a1f;
+  --chart-6: #8c5bb5;
+}
+
+/* ---------- 主题 3：石墨青 Graphite ---------- */
+[data-theme='graphite'] {
+  --c-bg: #e7ebea;
+  --c-bg-grid: rgba(11, 107, 99, 0.05);
+  --c-surface: #fbfcfc;
+  --c-surface-2: #f1f4f3;
+  --c-surface-3: #e1e7e5;
+  --c-border: #c3ccc9;
+  --c-border-strong: #7f8d89;
+  --c-text: #0f1715;
+  --c-text-2: #36433f;
+  --c-text-3: #65726e;
+
+  --c-primary: #0b6b63;
+  --c-primary-hover: #08534d;
+  --c-primary-weak: #dbeeea;
+  --c-on-primary: #ffffff;
+  --c-accent: #26302d;
+
+  --c-ok: #3b7a1c;
+  --c-ok-weak: #e5f0dc;
+  --c-warn: #b0510a;
+  --c-warn-weak: #f9ead9;
+  --c-danger: #b8163c;
+  --c-danger-weak: #f7e0e5;
+  --c-info: #2b56a8;
+  --c-info-weak: #e1e8f6;
+  --c-idle: #7a8783;
+  --c-idle-weak: #e9eeec;
+
+  --c-nav-bg: #f4f7f6;
+  --c-nav-active: #0b6b63;
+  --c-topbar-bg: #fbfcfc;
+  --c-topbar-rule: #26302d;
+  --c-focus: #12a094;
+
+  --chart-1: #0b6b63;
+  --chart-2: #2b56a8;
+  --chart-3: #c27a12;
+  --chart-4: #7d5aa6;
+  --chart-5: #5f8f2a;
+  --chart-6: #b8163c;
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VC-TestOS · 均热板智能测试与质量分析平台</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // 在首帧渲染前应用主题，避免切换主题后刷新出现闪烁
+      ;(function () {
+        try {
+          var ok = ['steel', 'signal', 'graphite']
+          var q = new URLSearchParams(location.search).get('theme')
+          if (ok.indexOf(q) >= 0) localStorage.setItem('vc-theme', q)
+          var t = localStorage.getItem('vc-theme')
+          if (ok.indexOf(t) < 0) t = 'steel'
+          document.documentElement.dataset.theme = t
+        } catch (e) {
+          document.documentElement.dataset.theme = 'steel'
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
