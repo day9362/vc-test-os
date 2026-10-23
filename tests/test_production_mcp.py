@@ -3,7 +3,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.core.errors import AppError
 from app.models.dto.production import ProductionIn
 from app.service.production.mcp_agent import parse_tool_payload, start_args, stop_args
 from app.service.production.service import ProductionService
@@ -64,7 +63,7 @@ class PayloadTests(unittest.TestCase):
 
 
 class StartStopTests(unittest.IsolatedAsyncioTestCase):
-    async def test_start_calls_device_mcp_not_cluster_http(self) -> None:
+    async def test_start_posts_cluster_http(self) -> None:
         body = _body()
         service = ProductionService(session=SimpleNamespace(commit=AsyncMock(), add=lambda *_: None, flush=AsyncMock()), redis=None)
         context = {
@@ -88,35 +87,15 @@ class StartStopTests(unittest.IsolatedAsyncioTestCase):
         service._dispatch = AsyncMock()
         service.audit.record = lambda *args, **kwargs: "AUD-1"
         service._store = AsyncMock()
-        with patch("app.service.production.service.start_on_device", new=AsyncMock(return_value={"batch_id": "B-HVP1307G17-1-9725e9b1", "accepted": ["M01", "M02"], "queue_remaining": 8})) as device:
+        with patch("app.service.production.service.post_production", new=AsyncMock(return_value={"batch_id": "B-HVP1307G17-1-9725e9b1", "accepted": ["M01", "M02"], "queue_remaining": 8})) as http:
             with patch("app.service.production.service.push_production", new=AsyncMock()):
                 with patch("app.service.production.service.push_batch", new=AsyncMock()):
-                    with patch("app.service.production.service.post_production", create=True, new=AsyncMock()) as http:
-                        result = await service.start(body, SimpleNamespace(user_id="limingyuan"), "k1")
-        device.assert_awaited_once()
-        http.assert_not_called()
+                    result = await service.start(body, SimpleNamespace(user_id="limingyuan"), "k1")
+        http.assert_awaited_once()
+        self.assertEqual(http.await_args.args[0], "/fleet/production/start")
         self.assertEqual(result.batch_id, "B-HVP1307G17-1-9725e9b1")
         self.assertEqual(result.accepted, ["M01", "M02"])
         self.assertEqual(result.audit_id, "AUD-1")
-
-    async def test_start_maps_mcp_failure(self) -> None:
-        from app.service.production.mcp_agent import McpCallError
-
-        body = _body()
-        service = ProductionService(session=SimpleNamespace(), redis=None)
-        service._cached = AsyncMock(return_value=None)
-        service._prepare = AsyncMock()
-        service._context = AsyncMock(return_value={
-            "plan_found": True, "plan_power": 3.5, "plan_name": "高压",
-            "limits": [{"item": "power_w"}], "model_power": 3.5, "remaining": 8,
-            "batch_known": True, "machines": _machines(),
-        })
-        service.repo.production = AsyncMock(return_value=None)
-        with patch("app.service.production.service.start_on_device", new=AsyncMock(side_effect=McpCallError("设备层拒绝了这次下发", {"ok": False}))):
-            with self.assertRaises(AppError) as raised:
-                await service.start(body, SimpleNamespace(user_id="limingyuan"), "k1")
-        self.assertEqual(raised.exception.status, 502)
-        self.assertEqual(raised.exception.code, "CLUSTER_ERROR")
 
     async def test_stop_calls_device_mcp(self) -> None:
         service = ProductionService(session=SimpleNamespace(commit=AsyncMock()), redis=None)
