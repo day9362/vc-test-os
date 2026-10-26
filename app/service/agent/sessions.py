@@ -59,5 +59,15 @@ class AgentStore:
             raise AppError(404, "NOT_FOUND", "对话不存在")
         return session
 
+    async def send(self, user_id: str, session_id: str, text: str) -> AgentMessage:
+        from app.service.agent.runtime import run_turn
+
+        session = self.get(user_id, session_id)
+        session.add("user", text)
+        turn = await run_turn(session.module, text, session.sdk_session_id)
+        if turn.get("sdk_session_id"):
+            session.sdk_session_id = turn["sdk_session_id"]
+        return session.add("agent", turn.get("text") or "", turn.get("blocks") or [], turn.get("tokens"))
+
 
 store = AgentStore()
