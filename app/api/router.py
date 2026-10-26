@@ -59,6 +59,7 @@ from app.api.production.get import router as production_router
 from app.api.production.precheck import router as precheck_router
 from app.api.production.start import router as production_start_router
 from app.api.production.stop import router as production_stop_router
+from app.api.agent.create_session import router as agent_create_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -120,3 +121,4 @@ api_router.include_router(production_router)
 api_router.include_router(precheck_router)
 api_router.include_router(production_start_router)
 api_router.include_router(production_stop_router)
+api_router.include_router(agent_create_router)
