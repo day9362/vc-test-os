@@ -30,27 +30,49 @@ def model_env() -> dict[str, str]:
     return env
 
 
-async def run_turn(module: str, text: str, sdk_session_id: str | None) -> dict:
+async def run_turn(
+    module: str,
+    text: str,
+    sdk_session_id: str | None,
+    *,
+    system: str | None = None,
+    allowed_tools: list[str] | None = None,
+    max_turns: int = 12,
+) -> dict:
     if not settings.anthropic_base_url or not settings.anthropic_api_key:
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
     loop = asyncio.get_running_loop()
     if sys.platform == "win32" and not isinstance(loop, asyncio.ProactorEventLoop):
-        return await asyncio.to_thread(_run_on_proactor, module, text, sdk_session_id)
-    return await _run_turn(module, text, sdk_session_id)
+        return await asyncio.to_thread(_run_on_proactor, module, text, sdk_session_id, system, allowed_tools, max_turns)
+    return await _run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns)
 
 
-def _run_on_proactor(module: str, text: str, sdk_session_id: str | None) -> dict:
+def _run_on_proactor(
+    module: str,
+    text: str,
+    sdk_session_id: str | None,
+    system: str | None,
+    allowed_tools: list[str] | None,
+    max_turns: int,
+) -> dict:
     proactor = asyncio.ProactorEventLoop()
     try:
         asyncio.set_event_loop(proactor)
-        return proactor.run_until_complete(_run_turn(module, text, sdk_session_id))
+        return proactor.run_until_complete(_run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns))
     finally:
         proactor.run_until_complete(proactor.shutdown_asyncgens())
         proactor.close()
         asyncio.set_event_loop(None)
 
 
-async def _run_turn(module: str, text: str, sdk_session_id: str | None) -> dict:
+async def _run_turn(
+    module: str,
+    text: str,
+    sdk_session_id: str | None,
+    system: str | None = None,
+    allowed_tools: list[str] | None = None,
+    max_turns: int = 12,
+) -> dict:
     try:
         from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
     except ImportError as exc:
@@ -60,15 +82,15 @@ async def _run_turn(module: str, text: str, sdk_session_id: str | None) -> dict:
     options = ClaudeAgentOptions(
         cwd=str(WORKSPACE),
         model=settings.anthropic_model or None,
-        system_prompt=system_prompt(module),
+        system_prompt=system or system_prompt(module),
         tools=[],
-        allowed_tools=MCP_TOOLS,
+        allowed_tools=MCP_TOOLS if allowed_tools is None else allowed_tools,
         disallowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"],
         permission_mode="acceptEdits",
-        mcp_servers={"vapor-chamber": {"type": "http", "url": settings.mcp_url}},
+        mcp_servers={} if allowed_tools == [] else {"vapor-chamber": {"type": "http", "url": settings.mcp_url}},
         strict_mcp_config=True,
         setting_sources=[],
-        max_turns=12,
+        max_turns=max_turns,
         resume=sdk_session_id,
         env=model_env(),
     )

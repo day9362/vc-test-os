@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.service.agent.draft import plan_from_reply
 from app.service.agent.runtime import model_env, run_turn
 from app.service.agent.sessions import AgentStore
 from app.service.agent.transcript import turn_from_messages
@@ -50,6 +51,30 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.anthropic_api_key, settings.anthropic_base_url = previous
         self.assertEqual(caught.exception.code, "MODEL_NOT_CONFIGURED")
+
+
+class DraftParseTests(unittest.TestCase):
+    def test_reads_fenced_plan(self) -> None:
+        reply = """方案如下：
+```json
+{"name":"HVP 3.5W 三分钟","start_temp_c":45,"duration_s":180,"sample_period_s":1,"power_w":3.5,"force_g":120,"orientation":90,"overtemp_c":80,"ambient_low_c":23,"ambient_high_c":27,"limits":[{"item":"Temp_T0-T1","low":0,"high":3.4,"unit":"℃","skipped":"false"},{"item":"power_w","low":3.4,"high":3.6,"unit":"W","skipped":false}],"notes":["压紧力按 120 g 填写"]}
+```"""
+        body, notes = plan_from_reply(reply)
+        self.assertEqual(body.name, "HVP 3.5W 三分钟")
+        self.assertEqual(body.power_w, 3.5)
+        self.assertEqual(body.orientation, 90)
+        self.assertFalse(body.limits[0].skipped)
+        self.assertEqual(notes, ["压紧力按 120 g 填写"])
+
+    def test_fills_limits_when_model_omits_them(self) -> None:
+        body, notes = plan_from_reply('{"name":"快速检查","duration_s":10,"power_w":2.5}')
+        self.assertEqual([rule.item for rule in body.limits], ["power_w"])
+        self.assertTrue(any("判定项" in note for note in notes))
+
+    def test_rejects_prose_without_json(self) -> None:
+        with self.assertRaises(AppError) as caught:
+            plan_from_reply("好的，我来写一份方案。")
+        self.assertEqual(caught.exception.code, "AGENT_FAILED")
 
 
 class EnvTests(unittest.TestCase):
