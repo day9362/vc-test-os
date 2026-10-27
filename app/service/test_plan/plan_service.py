@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
+from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.test_plan import DeleteOut, DraftOut, FromTextOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
 from app.models.entity.user import UserEntity
@@ -15,8 +16,8 @@ from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.test_plan_repo import TestPlanRepo
+from app.service.agent.draft import generate_draft
 from app.service.test_plan.cluster import ingest_cluster_plans, publish_cluster
-from app.service.test_plan.from_text import draft_from_text
 from app.service.test_plan.mapping import entity_of, item_out
 from app.service.test_plan.validate import fleet_bounds, validate_plan
 
@@ -129,17 +130,18 @@ class PlanService:
             return FromTextOut.model_validate(cached)
         if not text.strip():
             raise AppError(400, "BAD_REQUEST", "描述不能为空")
-        body, notes, usage = draft_from_text(text)
+        started = now_ms()
+        body, notes, usage = await generate_draft(text)
         created = await self.create_draft(body, user, None, source="agent")
         self.session.add(AiCallOrm(
             id=f"call-{uuid4().hex[:8]}",
             time=now_ms(),
             module="agent.plan",
             user=user.name,
-            model="rule",
+            model=settings.anthropic_model or "agent",
             input_tokens=usage.input,
             output_tokens=usage.output,
-            latency_ms=1,
+            latency_ms=max(now_ms() - started, 1),
             ok=True,
             ref={"plan_id": created.plan.plan_id},
         ))

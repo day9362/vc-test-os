@@ -350,7 +350,7 @@ async function draft() {
 
       <div class="col" style="gap: 12px; min-width: 0">
         <!-- 自然语言起草 -->
-        <Panel title="用一句话起草方案" code="AGENT.PLAN · qwen3-max" :icon="Sparkles">
+        <Panel title="用一句话起草方案" code="AGENT.PLAN" :icon="Sparkles">
           <div class="row">
             <div class="input-wrap grow"><Bot :size="14" /><input v-model="nl" class="input" placeholder="例如：HVP 3.5W，压紧力 120g，测 3 分钟，T0-T1 不超过 3.4 度" :disabled="nlBusy" @keydown.enter="draft" /></div>
             <button class="btn btn-primary" :disabled="nlBusy || !nl.trim()" @click="draft"><Loader2 v-if="nlBusy" :size="16" class="spin" /><FilePlus2 v-else :size="16" />生成草稿</button>

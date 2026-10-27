@@ -1,22 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowUp, BarChart3, Bot, Check, ChevronRight, Database, FileCode2, Loader2, Plus, ShieldCheck, Sparkles, SquareTerminal, User, Wrench, X,
 } from 'lucide-vue-next'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
-import { useLiveStore } from '@/stores/live'
+import { api } from '@/api/http'
+import type { BatchStat } from '@/api/types'
 import { useAppStore } from '@/stores/app'
-import { useTokens } from '@/composables/useTokens'
-import { models, plans } from '@/mock/cluster'
 import { hms } from '@/utils/format'
 
-const live = useLiveStore()
 const app = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const tk = useTokens()
 
 type Block =
   | { type: 'tool'; name: string; args: string; result: string; write?: false }
@@ -32,91 +29,107 @@ const CAPS = [
 ]
 
 let mid = 0
-const msgs = ref<Msg[]>([])
 const input = ref('')
 const busy = ref(false)
 const scroller = ref<HTMLElement>()
-const scope = ref({ model: 'tb172', batches: live.batchStats.filter((b) => b.model === 'tb172').slice(0, 3).map((b) => b.batch_id), machines: [] as string[] })
+const viewKey = ref(0)
+const scope = ref({ model: '', batches: [] as string[], machines: [] as string[] })
+const modelOptions = ref<{ model: string }[]>([])
+const batchRows = ref<BatchStat[]>([])
+const publishedPlans = ref(0)
+const machineCount = ref(0)
+const visibleBatches = computed(() => batchRows.value.filter((row) => row.model === scope.value.model))
+
+function yieldText(row: BatchStat) {
+  if (!row.tested) return '—'
+  return `${((row.passed / row.tested) * 100).toFixed(1)}%`
+}
+
+async function loadScope() {
+  const [modelRows, statPage, planRows, machineRows] = await Promise.all([
+    api<{ model: string }[]>('/models'),
+    api<{ items: BatchStat[] }>('/batch-stats?limit=50'),
+    api<{ meta?: { draft?: boolean } }[]>('/plans'),
+    api<{ machine_id: string }[]>('/machines'),
+  ])
+  modelOptions.value = modelRows
+  batchRows.value = statPage.items || []
+  publishedPlans.value = planRows.filter((row) => row.meta && !row.meta.draft).length
+  machineCount.value = machineRows.length
+  const preferred = modelOptions.value.find((row) => batchRows.value.some((batch) => batch.model === row.model))
+  scope.value.model = preferred?.model || modelOptions.value[0]?.model || ''
+  scope.value.batches = visibleBatches.value.slice(0, 3).map((row) => row.batch_id)
+}
+
+watch(() => scope.value.model, () => {
+  scope.value.batches = visibleBatches.value.slice(0, 3).map((row) => row.batch_id)
+})
 
 const scroll = () => nextTick(() => scroller.value?.scrollTo({ top: scroller.value.scrollHeight, behavior: 'smooth' }))
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+type AgentModule = 'agent.analysis' | 'agent.plan' | 'agent.ops'
+const MODULE_TEXT: Record<AgentModule, string> = { 'agent.analysis': '跨批次分析', 'agent.plan': '方案生成', 'agent.ops': '设备操作' }
+const activeModule = ref<AgentModule>('agent.analysis')
+const sessions = ref<Partial<Record<AgentModule, string>>>({})
+const transcripts = ref<Record<AgentModule, Msg[]>>({
+  'agent.analysis': [],
+  'agent.plan': [],
+  'agent.ops': [],
+})
+const msgs = computed(() => transcripts.value[activeModule.value])
 
-function analysis(q: string): Omit<Msg, 'id' | 'role' | 'time'> {
-  const bs = live.batchStats.filter((b) => scope.value.batches.includes(b.batch_id))
-  const L = bs.length ? bs : live.batchStats.slice(0, 3)
-  const ms = ['M01', 'M02', 'M03', 'M04', 'M06', 'M07', 'M11']
-  const yields = (i: number) => ms.map((m) => +(98.4 - (m === 'M07' ? 2.6 + i * 0.4 : 0) - (m === 'M03' ? 0.6 : 0) + Math.sin(i * 3 + m.charCodeAt(2)) * 0.4).toFixed(2))
-  return {
-    module: 'agent.analysis', tokens: [9800, 1320],
-    text: `${L.length} 个批次里，M07 的良率比其余机台低 2.6–3.4 个百分点，且越到后面的批次差距越大；同一批次在其它机台上表现正常，说明问题在机台而不是来料。\n\nM07 的 T1 通道在 10 片标准样品复测中估计漂移 +0.18 ℃（LINEAR，仍在增长），已超过 0.15 ℃ 的设备异常阈值。T1 偏高会让 Temp_T0-T1 偏小、Rc = (T1−Ta)/P 偏大，和 M07 Rc 偏高 +0.094 ℃/W 一致。\n\n建议：先给 M07 的 T1 写入 −0.18 ℃ 补偿，再用标准样品复测确认；补偿前 M07 上判不合格的 ${Math.round(L.length * 9)} 片建议复测，不要直接报废。`,
-    blocks: [
-      { type: 'tool', name: 'sql · 本地库', args: `SELECT batch_id, machine_id, avg(passed::int) FROM runs WHERE batch_id IN (${L.length} 个) GROUP BY 1, 2`, result: `${L.length * ms.length} 行` },
-      { type: 'tool', name: 'GET /api/machines/M07/drifts', args: '', result: 'T1 · LINEAR · current +0.18 ℃；Ta · HOURLY · +0.05 ℃' },
-      { type: 'chart', title: '各批次分机台良率', option: () => ({
-        grid: { left: 40, right: 12, top: 28, bottom: 24 }, legend: {},
-        xAxis: { type: 'category', data: ms }, yAxis: { type: 'value', min: 94, max: 100 },
-        series: L.map((b, i) => ({ name: b.batch_id.slice(-8), type: 'bar', data: yields(i), itemStyle: { color: tk.value.chart[i % 6] } })),
-      }) },
-      { type: 'action', method: 'PUT', path: '/api/machines/M07/compensation', body: { mode: 'add', compensation: [{ channel: 'T1', value: -0.18 }] }, desc: 'M07 · T1 通道补偿 −0.18 ℃（叠加到现有补偿）', risk: 'high', status: 'pending' },
-    ],
-  }
-}
-function planIntent(q: string): Omit<Msg, 'id' | 'role' | 'time'> {
-  const hvp = /HVP|3\.5/i.test(q)
-  const power = hvp ? 3.5 : 2.5
-  const force = +(q.match(/(\d+)\s*g/)?.[1] ?? (hvp ? 120 : 100))
-  const dur = +(q.match(/(\d+)\s*分钟/)?.[1] ?? 3) * 60
-  const t1x = +(q.match(/温差上限\s*([\d.]+)/)?.[1] ?? (hvp ? 4.8 : 4.0))
-  const id = `DRAFT-${String(10 + mid).padStart(4, '0')}`
-  return {
-    module: 'agent.plan', tokens: [3900, 860],
-    text: `已生成方案草稿，所有字段都在 X9601 能力范围内（功率 0.1–10 W、压紧力 20–300 g、时长 1–600 s）。${hvp ? 'HVP1307G17-1 参考功率 3.5 W，按惯例 power_w 判定 3.4–3.6 W。' : ''}草稿只保存在本地，需要在「测试方案」页确认后发布，再到「测试执行」下发。`,
-    blocks: [
-      { type: 'tool', name: 'GET /api/machines/M01', args: 'capability', result: 'duration 1–600 s · power 0.1–10 W · force 20–300 g · 19 温度 / 14 压力通道' },
-      { type: 'plan', plan_id: id, name: q.slice(0, 20), fields: [
-        ['power_w', `${power} W`], ['force_g', `${force} g`], ['duration_s', `${dur} s`], ['orientation', /90/.test(q) ? '90°' : '0°'],
-        ['Temp_T0-T1', `≤ ${hvp ? 3.4 : 2.8} ℃`], ['Temp_T1-T2…T12', `≤ ${t1x} ℃`], ['Temp_T1-T13/14', '跳过'], ['power_w 判定', `${power - 0.1}–${power + 0.1} W`],
-      ] },
-    ],
-  }
-}
-function opsIntent(q: string): Omit<Msg, 'id' | 'role' | 'time'> {
-  const m = q.match(/M\d{2}/)?.[0] ?? 'M05'
-  const mach = live.machine(m)
-  const blocks: Block[] = [{ type: 'tool', name: `GET /api/machines/${m}`, args: '', result: mach ? `status ${mach.status} · comm ${mach.comm_status}${mach.alarm ? ' · ' + mach.alarm : ''}` : '未找到' }]
-  let text = ''
-  if (mach?.comm_status === 'DISCONNECTED') {
-    text = `${m} 当前通信断开，所有指令都会返回 503，无法执行。请先在现场检查网线 / 交换机，恢复后我再继续。`
-  } else if (/补偿/.test(q)) {
-    const v = +(q.match(/(-?[\d.]+)\s*℃/)?.[1] ?? -0.18)
-    text = `${m} T1 当前补偿 0，估计漂移 +0.18 ℃。写入后新测试立即生效，正在测量的片子不受影响。`
-    blocks.push({ type: 'action', method: 'PUT', path: `/api/machines/${m}/compensation`, body: { mode: 'add', compensation: [{ channel: 'T1', value: v }] }, desc: `${m} · T1 补偿 ${v} ℃`, risk: 'high', status: 'pending' })
-  } else if (/停止/.test(q)) {
-    text = `当前连续生产批次 ${live.production?.batch_id ?? '—'}，剩余 ${live.production?.queue_remaining ?? 0} 片。停止在取下一片前生效，正在测的片子会测完。`
-    blocks.push({ type: 'action', method: 'POST', path: '/api/fleet/production/stop', body: null, desc: '停止连续生产', risk: 'high', status: 'pending' })
-  } else if (/维修/.test(q)) {
-    text = `${m} 处于 MAINTENANCE。结束维修后机台回到 OFFLINE，需要再上电才会参与生产。`
-    blocks.push({ type: 'action', method: 'POST', path: `/api/machines/${m}/maintenance`, body: { on: false }, desc: `${m} · 结束维修`, risk: 'low', status: 'pending' })
-  } else {
-    text = `${m} 处于 ${mach?.status}（${mach?.alarm || '无报警'}）。按顺序执行：先 reset 清除故障，再 power-on。两步都需要你确认。`
-    blocks.push({ type: 'action', method: 'POST', path: `/api/machines/${m}/reset`, body: null, desc: `${m} · 复位（清除 FAULT，槽位 ERROR → IDLE）`, risk: 'low', status: 'pending' })
-    blocks.push({ type: 'action', method: 'POST', path: `/api/machines/${m}/power-on`, body: null, desc: `${m} · 上电`, risk: 'low', status: 'pending' })
-  }
-  return { module: 'agent.ops', tokens: [2600, 410], text, blocks }
+function redraw() {
+  viewKey.value += 1
+  scroll()
 }
 
-async function send(q = input.value) {
+async function showSession(module: AgentModule, force = false) {
+  if (busy.value && !force) return
+  activeModule.value = module
+  const sid = sessions.value[module]
+  if (!sid) {
+    transcripts.value[module] = []
+    redraw()
+    return
+  }
+  const body = await api<{ messages: Msg[] }>(`/agent/sessions/${sid}`)
+  transcripts.value[module] = (body.messages || []).map((item) => ({
+    ...item,
+    id: ++mid,
+    blocks: item.blocks ?? [],
+  }))
+  redraw()
+}
+
+async function send(q = input.value, module?: AgentModule) {
   q = q.trim()
   if (!q || busy.value) return
+  const chosen = module ?? activeModule.value
+  if (chosen !== activeModule.value) await showSession(chosen)
   input.value = ''
-  msgs.value.push({ id: ++mid, role: 'user', text: q, blocks: [], time: Date.now() })
+  transcripts.value[chosen].push({ id: ++mid, role: 'user', text: q, blocks: [], time: Date.now() })
   busy.value = true
   scroll()
-  await sleep(900)
-  const r = /方案|测\s*\d+\s*分钟|竖放/.test(q) ? planIntent(q) : /补偿|复位|上电|关机|停止|维修|下发/.test(q) ? opsIntent(q) : analysis(q)
-  msgs.value.push({ id: ++mid, role: 'agent', time: Date.now(), ...r })
-  busy.value = false
-  scroll()
+  try {
+    let sid = sessions.value[chosen]
+    if (!sid) {
+      const created = await api<{ session_id: string }>('/agent/sessions', {
+        method: 'POST',
+        body: JSON.stringify({ module: chosen }),
+      })
+      sid = created.session_id
+      sessions.value[chosen] = sid
+    }
+    await api<Msg>(`/agent/sessions/${sid}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ text: q }),
+    })
+    await showSession(chosen, true)
+  } catch (err) {
+    app.toast({ kind: 'danger', title: 'Agent 没有完成', desc: err instanceof Error ? err.message : '请求失败' })
+  } finally {
+    busy.value = false
+    scroll()
+  }
 }
 
 async function approve(b: Extract<Block, { type: 'action' }>) {
@@ -139,19 +152,21 @@ function reject(b: Extract<Block, { type: 'action' }>) {
 
 const pending = computed(() => msgs.value.flatMap((m) => m.blocks.filter((b): b is Extract<Block, { type: 'action' }> => b.type === 'action' && b.status === 'pending')))
 const sessionTokens = computed(() => msgs.value.reduce((a, m) => a + (m.tokens ? m.tokens[0] + m.tokens[1] : 0), 0))
-const MODULE_TEXT: Record<string, string> = { 'agent.analysis': '跨批次分析', 'agent.plan': '方案生成', 'agent.ops': '设备操作' }
 
 function toggleBatch(id: string) {
   const s = scope.value.batches
   scope.value.batches = s.includes(id) ? s.filter((x) => x !== id) : [...s, id]
 }
 function newSession() {
-  msgs.value = []
+  const module = activeModule.value
+  delete sessions.value[module]
+  transcripts.value[module] = []
+  redraw()
 }
 
 onMounted(() => {
+  loadScope().catch((err) => app.toast({ kind: 'danger', title: '分析范围没有加载', desc: err instanceof Error ? err.message : '请求失败' }))
   if (route.query.q) { send(String(route.query.q)); router.replace({ query: {} }) }
-  else send(CAPS[0].prompts[0])
 })
 </script>
 
@@ -160,21 +175,25 @@ onMounted(() => {
     <!-- 左：能力 -->
     <aside class="left">
       <button class="btn btn-primary" style="width: 100%" @click="newSession"><Plus :size="16" />新对话</button>
-      <div v-for="c in CAPS" :key="c.key" class="cap">
-        <h4><component :is="c.icon" :size="14" />{{ c.title }}<span class="code-label">{{ c.module }}</span></h4>
-        <button v-for="p in c.prompts" :key="p" class="pr" :disabled="busy" @click="send(p)">
+      <div v-for="c in CAPS" :key="c.key" class="cap" :class="{ active: activeModule === c.module }">
+        <h4 @click="showSession(c.module as AgentModule)"><component :is="c.icon" :size="14" />{{ c.title }}<span class="code-label">{{ c.module }}</span></h4>
+        <button v-for="p in c.prompts" :key="p" class="pr" :disabled="busy" @click="send(p, c.module as AgentModule)">
           <span>{{ p }}</span><ChevronRight :size="14" />
         </button>
       </div>
       <div class="safe">
         <ShieldCheck :size="16" />
-        <p>Agent 只能读取本地库与集群的只读接口。写操作（补偿、上电、下发、停止…）一律生成待确认卡片，由你批准后才调用集群 API。</p>
+        <p>Agent 通过 vapor-chamber MCP 查看 mock 测试机，并直接下发方案、上下电和连续生产。请确认 MCP 服务和第三方模型地址已经配置。</p>
       </div>
     </aside>
 
     <!-- 中：对话 -->
     <section class="center">
-      <div ref="scroller" class="msgs">
+      <div class="session-bar">
+        <span class="tag primary">{{ MODULE_TEXT[activeModule] }}</span>
+        <span class="mono fs-xs muted">{{ sessions[activeModule] || '新会话' }}</span>
+      </div>
+      <div :key="viewKey" ref="scroller" class="msgs">
         <div v-for="m in msgs" :key="m.id" class="msg" :class="m.role">
           <div class="av"><User v-if="m.role === 'user'" :size="16" /><Bot v-else :size="16" /></div>
           <div class="bd">
@@ -226,7 +245,7 @@ onMounted(() => {
         </div>
         <div v-if="busy" class="msg agent">
           <div class="av"><Bot :size="16" /></div>
-          <div class="bd"><div class="row fs-sm muted"><Loader2 :size="14" class="spin" />正在查询本地库与集群…</div></div>
+          <div class="bd"><div class="row fs-sm muted"><Loader2 :size="14" class="spin" />正在通过 MCP 操作测试机…</div></div>
         </div>
       </div>
       <div class="composer">
@@ -241,18 +260,19 @@ onMounted(() => {
         <div class="field">
           <label>型号</label>
           <select v-model="scope.model" class="select">
-            <option v-for="m in models" :key="m.model" :value="m.model">{{ m.model }}</option>
+            <option v-for="m in modelOptions" :key="m.model" :value="m.model">{{ m.model }}</option>
           </select>
         </div>
         <div class="field" style="margin-top: 10px">
           <label>批次（{{ scope.batches.length }}）</label>
-          <label v-for="b in live.batchStats.filter((x) => x.model === scope.model)" :key="b.batch_id" class="bopt">
+          <label v-for="b in visibleBatches" :key="b.batch_id" class="bopt">
             <input type="checkbox" :checked="scope.batches.includes(b.batch_id)" @change="toggleBatch(b.batch_id)" />
             <span class="mono fs-xs grow ellipsis">{{ b.batch_id }}</span>
-            <span class="num fs-xs muted">{{ ((b.passed / b.tested) * 100).toFixed(1) }}%</span>
+            <span class="num fs-xs muted">{{ yieldText(b) }}</span>
           </label>
+          <p v-if="!visibleBatches.length" class="fs-xs muted">这个型号还没有批次统计</p>
         </div>
-        <p class="fs-xs muted" style="margin-top: 8px">方案：{{ plans.filter((p) => p.version).length }} 个已发布 · 机台：12 台</p>
+        <p class="fs-xs muted" style="margin-top: 8px">方案：{{ publishedPlans }} 个已发布 · 机台：{{ machineCount }} 台</p>
       </Panel>
       <Panel title="待确认操作" code="PENDING" :icon="ShieldCheck" :accent="pending.length ? 'warn' : undefined" flush>
         <ul class="pend">
@@ -282,7 +302,9 @@ onMounted(() => {
 .left, .right { padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow: auto; background: var(--c-surface); }
 .left { border-right: var(--bw) solid var(--c-border); }
 .right { border-left: var(--bw) solid var(--c-border); background: var(--c-bg); }
-.cap h4 { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); margin-bottom: 6px; }
+.cap h4 { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); margin-bottom: 6px; cursor: pointer; }
+.cap.active h4 { color: var(--c-primary); }
+.session-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: var(--bw) solid var(--c-border); background: var(--c-surface); }
 .cap h4 .code-label { margin-left: auto; font-size: 9px; }
 .pr { width: 100%; display: flex; align-items: center; gap: 4px; text-align: left; padding: 6px 8px; margin-bottom: 4px; border: var(--bw) solid var(--c-border); background: var(--c-surface-2); color: var(--c-text-2); font-size: var(--fs-xs); cursor: pointer; line-height: 1.4; }
 .pr span { flex: 1; }
