@@ -80,6 +80,7 @@ class ReportDataOut(BaseModel):
 class ReportExportIn(BaseModel):
     batch_ids: list[str]
     figure_ids: list[str] = []
+    summary_lines: list[str] = []
     format: str = "pdf"
 
 

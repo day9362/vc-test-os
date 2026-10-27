@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_user
@@ -8,6 +8,15 @@ from app.models.entity.user import UserEntity
 from app.service.reports.report_service import ReportService
 
 router = APIRouter(tags=["reports"])
+
+
+@router.get("/reports/summary", response_model=ReportNarrativeOut)
+async def saved_summary(
+    batch_ids: str = Query(default=""),
+    _: object = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ReportNarrativeOut:
+    return await ReportService(session).saved_summary(batch_ids.split(","))
 
 
 @router.post("/reports/summary", response_model=ReportNarrativeOut)

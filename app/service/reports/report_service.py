@@ -1,7 +1,9 @@
 from collections import defaultdict
 from math import sqrt
+from uuid import uuid4
 
 from redis.asyncio import Redis
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
@@ -22,15 +24,16 @@ from app.models.dto.report import (
     ReportUsageOut,
 )
 from app.models.entity.user import UserEntity
+from app.service.ai.usage import UsageService
+from app.models.orm.report_figure import ReportFigureOrm
+from app.models.orm.report_narrative import ReportNarrativeOrm
 from app.models.orm.run import RunOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
-from app.service.ai.usage import UsageService
+from app.service.reports.figures import batch_key
 from app.service.reports.narrative import grounded_lines, request_summary
-from app.service.reports.pdf import render_report_pdf
-from app.service.reports.store import save_report_pdf
-from app.service.runs.cluster_ingest import fleet_machine_ids
-from app.service.runs.run_service import RunService
+from app.service.reports.pdf import PdfFigure, chart_bars, render_report_pdf
+from app.service.reports.store import reports_dir, save_report_pdf
 
 USL_T01 = 2.8
 BINS = 28
@@ -127,10 +130,25 @@ class ReportService:
             ok=error is None,
             ref={"batch_ids": ids},
         )
+        if error is None and lines:
+            self.session.add(ReportNarrativeOrm(
+                narrative_id=f"nar_{uuid4().hex[:8]}",
+                batch_key=batch_key(ids),
+                lines=lines,
+                model=model_name,
+                created_at=now_ms(),
+            ))
         await self.session.commit()
         if error is not None:
             raise error
         return ReportNarrativeOut(lines=lines, model=model_name, usage=ReportUsageOut(input=input_tokens, output=output_tokens))
+
+    async def saved_summary(self, batch_ids: list[str]) -> ReportNarrativeOut:
+        ids = [item.strip() for item in batch_ids if item and item.strip()]
+        row = await self._latest_narrative(ids)
+        if row is None:
+            return ReportNarrativeOut(lines=[], model="", usage=ReportUsageOut(input=0, output=0))
+        return ReportNarrativeOut(lines=list(row.lines or []), model=row.model, usage=ReportUsageOut(input=0, output=0))
 
     async def export(self, body: ReportExportIn, user: UserEntity, idempotency_key: str | None) -> ReportExportOut:
         cached = await self._cached(idempotency_key)
@@ -143,17 +161,59 @@ class ReportService:
         if fmt != "pdf":
             raise AppError(422, "VALIDATION_ERROR", "目前仅支持 format=pdf")
         data = await self.data(",".join(ids))
-        skipped = [item for item in body.figure_ids if item]
-        figure_note = None
-        if skipped:
-            figure_note = f"图表尚未接入导出（8.3 未实现），已忽略 figure_ids: {', '.join(skipped)}"
-        pdf = render_report_pdf(data, figure_note)
+        lines = _clean_lines(body.summary_lines)
+        if not lines:
+            saved = await self._latest_narrative(ids)
+            lines = _clean_lines(list(saved.lines or []) if saved is not None else [])
+        figures, included = await self._export_figures(ids, body.figure_ids)
+        pdf = render_report_pdf(data, lines, figures)
         url = save_report_pdf(pdf)
-        self.audit.record(user.user_id, "report.export", "", {"batch_ids": ids, "figure_ids": skipped, "format": fmt}, {"url": url})
+        self.audit.record(
+            user.user_id,
+            "report.export",
+            "",
+            {"batch_ids": ids, "figure_ids": included, "summary": bool(lines), "format": fmt},
+            {"url": url},
+        )
         out = ReportExportOut(url=url)
         await self.session.commit()
         await self._store(idempotency_key, out)
         return out
+
+    async def _latest_narrative(self, batch_ids: list[str]) -> ReportNarrativeOrm | None:
+        key = batch_key(batch_ids)
+        if not key:
+            return None
+        return await self.session.scalar(
+            select(ReportNarrativeOrm).where(ReportNarrativeOrm.batch_key == key).order_by(ReportNarrativeOrm.created_at.desc()).limit(1)
+        )
+
+    async def _export_figures(self, batch_ids: list[str], figure_ids: list[str]) -> tuple[list[PdfFigure], list[str]]:
+        key = batch_key(batch_ids)
+        if not key:
+            return [], []
+        wanted = [item.strip() for item in figure_ids if item and item.strip()]
+        query = select(ReportFigureOrm).where(ReportFigureOrm.batch_key == key, ReportFigureOrm.status == "done").order_by(ReportFigureOrm.created_at)
+        if wanted:
+            query = query.where(ReportFigureOrm.figure_id.in_(wanted))
+        rows = (await self.session.scalars(query)).all()
+        figures: list[PdfFigure] = []
+        included: list[str] = []
+        for row in rows:
+            image = _figure_png(row.png_name)
+            results = []
+            for pair in row.results or []:
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    results.append((str(pair[0])[:40], str(pair[1])[:80]))
+            figures.append(PdfFigure(
+                title=(row.title or row.prompt or "补充分析")[:40],
+                prompt=(row.prompt or "")[:200],
+                results=results[:20],
+                bars=[] if image else chart_bars(row.echarts_option),
+                image=image,
+            ))
+            included.append(row.figure_id)
+        return figures, included
 
     async def _cached(self, key: str | None):
         if not key or self.redis is None:
@@ -169,6 +229,26 @@ class ReportService:
             return
         import json
         await self.redis.set(f"idem:{key}", json.dumps(body.model_dump()), ex=600)
+
+
+def _clean_lines(lines: list[str]) -> list[str]:
+    cleaned = []
+    for line in lines:
+        text = " ".join(str(line).split())
+        if text:
+            cleaned.append(text[:500])
+        if len(cleaned) >= 30:
+            break
+    return cleaned
+
+
+def _figure_png(name: str) -> bytes | None:
+    if not name or "/" in name or "\\" in name:
+        return None
+    path = reports_dir() / name
+    if not path.is_file():
+        return None
+    return path.read_bytes()
 
 
 def _empty(batches: list[BatchStatOut]) -> ReportDataOut:
