@@ -80,7 +80,7 @@ class StatsService:
         fleet = await self._fleet_ids()
         allowed = set(fleet) if fleet else None
         for alarm in await self.alarms.since(start_hour):
-            if allowed and alarm.machine_id not in allowed:
+            if allowed and alarm.machine_id and alarm.machine_id not in allowed:
                 continue
             category = SOURCE_CATEGORY.get(alarm.source)
             if category is None or alarm.time >= start_hour + hours * HOUR_MS:

@@ -67,6 +67,7 @@ from app.api.agent.send_message import router as agent_send_router
 from app.api.ai.modules import router as ai_modules_router
 from app.api.ai.usage_summary import router as ai_usage_summary_router
 from app.api.ai.usage_daily import router as ai_usage_daily_router
+from app.api.ai.calls import router as ai_calls_router
 
 api_router = APIRouter()
 api_router.include_router(login_router)
@@ -136,3 +137,4 @@ api_router.include_router(agent_send_router)
 api_router.include_router(ai_modules_router)
 api_router.include_router(ai_usage_summary_router)
 api_router.include_router(ai_usage_daily_router)
+api_router.include_router(ai_calls_router)

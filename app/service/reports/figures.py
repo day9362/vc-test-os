@@ -16,10 +16,10 @@ from app.core.database import SessionLocal
 from app.core.errors import AppError
 from app.models.dto.report import FigureCreatedOut, FigureOut, ReportUsageOut
 from app.models.entity.user import UserEntity
-from app.models.orm.alarm import AiCallOrm
 from app.models.orm.report_figure import ReportFigureOrm
 from app.models.orm.run import RunOrm
 from app.repo.run_repo import RunRepo
+from app.service.ai.usage import UsageService
 from app.service.reports.narrative import chat_completions_url
 from app.service.reports.sandbox import read_result, reject_code, run_in_sandbox, sanitize_option
 from app.service.reports.store import reports_dir
@@ -148,9 +148,7 @@ class FigureService:
             row.status = "done"
             row.error = ""
             row.step = "done"
-        self.session.add(AiCallOrm(
-            id=f"call-{uuid4().hex[:8]}",
-            time=now_ms(),
+        await UsageService(self.session).record(
             module="report",
             user=user_name,
             model=model_name,
@@ -159,7 +157,7 @@ class FigureService:
             latency_ms=max(now_ms() - row.created_at, 1),
             ok=not error,
             ref={"figure_id": figure_id, "batch_ids": row.batch_ids},
-        ))
+        )
         await self.session.commit()
 
     async def _records(self, batch_ids: list[str]) -> list[dict]:
