@@ -65,6 +65,7 @@ const faults = ref(faultCatalog.map((item) => ({ kind: item.kind, layer: item.la
 const scenario = ref(scenarios.value[0].name)
 const fault = ref(faults.value[0].kind)
 const jobRuns = ref<Record<string, { last_at: number | null; elapsed_ms: number | null; failed: boolean | null }>>({})
+const jobStatusError = ref('')
 const auditRows = ref<{ audit_id: string; time: number; actor: string; action: string; machine_id: string }[]>([])
 const auditHint = ref('打开本页会读取最近的写操作')
 
@@ -80,6 +81,7 @@ async function loadAudit() {
 }
 
 function jobText(key: string) {
+  if (jobStatusError.value) return '状态没有读到'
   const row = jobRuns.value[key]
   if (!row || row.last_at == null) return '还没有跑过'
   const state = row.failed ? '失败' : '成功'
@@ -145,11 +147,15 @@ onMounted(async () => {
   } catch (err) {
     app.toast({ kind: 'danger', title: '设置没有读到', desc: err instanceof Error ? err.message : '' })
   }
-  const [status, fleet] = await Promise.all([
-    api<{ items: { key: string; last_at: number | null; elapsed_ms: number | null; failed: boolean | null }[] }>('/sync/jobs/status').catch(() => ({ items: [] })),
-    api<{ machine_id: string }[]>('/machines').catch(() => []),
-  ])
-  jobRuns.value = Object.fromEntries(status.items.map((item) => [item.key, item]))
+  const fleet = await api<{ machine_id: string }[]>('/machines').catch(() => [])
+  try {
+    const status = await api<{ items: { key: string; last_at: number | null; elapsed_ms: number | null; failed: boolean | null }[] }>('/sync/jobs/status')
+    jobRuns.value = Object.fromEntries(status.items.map((item) => [item.key, item]))
+    jobStatusError.value = ''
+  } catch (err) {
+    jobRuns.value = {}
+    jobStatusError.value = err instanceof Error ? err.message : '状态没有读到'
+  }
   machines.value = fleet.map((item) => item.machine_id)
   if (machines.value.length && !machines.value.includes(scenarioTarget.value)) scenarioTarget.value = machines.value[0]
   await loadAudit()
@@ -256,7 +262,7 @@ onBeforeRouteLeave(async () => {
                       <span>s</span>
                     </div>
                   </td>
-                  <td class="fs-xs text-2">{{ jobText(j.key) }}</td>
+                  <td class="fs-xs" :class="jobStatusError ? 't-danger' : 'text-2'" :title="jobStatusError">{{ jobText(j.key) }}</td>
                   <td class="fs-sm text-2" style="white-space: normal">{{ j.note }}<span v-if="j.interval_s < minInterval(j.key)" class="t-danger"> · 最小 {{ minInterval(j.key) }} s</span></td>
                 </tr>
               </tbody>

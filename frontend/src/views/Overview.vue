@@ -101,8 +101,47 @@ const alarmFilter = ref<'open' | 'all'>('open')
 const alarmList = computed(() => ov.alarms.filter((a) => alarmFilter.value === 'all' || !a.acked).slice(0, 12))
 const pipeStats = computed(() => ov.pipe)
 
+function csvCell(value: string | number) {
+  const text = String(value)
+  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
+}
+
+function windowStamp(ts: number) {
+  const date = new Date(ts)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${p2(date.getMonth() + 1)}-${p2(date.getDate())} ${p2(date.getHours())}:${p2(date.getMinutes())}`
+}
+
 function exportCsv() {
-  app.toast({ kind: 'ok', title: '已导出 5 分钟汇总', desc: `agg_5m_${new Date().toISOString().slice(0, 10)}.csv` })
+  const rows = ov.agg
+  if (!rows.length) {
+    app.toast({ kind: 'danger', title: '没有可导出的 5 分钟汇总' })
+    return
+  }
+  const header = ['时间窗开始', '时间窗结束', '测试', '通过', '不合格', '中止', '良率(%)', 'Rc均值', 'T0-T1']
+  const lines = rows.map((row) => [
+    windowStamp(row.bucket),
+    windowStamp(row.bucket + 300_000),
+    row.tests,
+    row.passed,
+    row.failed,
+    row.aborted,
+    ((row.passed / Math.max(1, row.tests)) * 100).toFixed(1),
+    row.rc_mean.toFixed(3),
+    row.dt01_mean.toFixed(3),
+  ].map(csvCell).join(','))
+  const name = `agg_5m_${new Date().toISOString().slice(0, 10)}.csv`
+  const blob = new Blob([`\uFEFF${[header.join(','), ...lines].join('\r\n')}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  const rangeText = ov.range === '2h' ? '近 2 小时' : '本班 8 小时'
+  app.toast({ kind: 'ok', title: '已导出 5 分钟汇总', desc: `${name} · ${rangeText} · ${rows.length} 个时间窗` })
 }
 </script>
 
@@ -116,7 +155,7 @@ function exportCsv() {
       <button class="btn btn-icon" :aria-pressed="ov.paused" v-tip="ov.paused ? '恢复实时刷新' : '暂停实时刷新（便于读数）'" @click="ov.paused = !ov.paused">
         <Play v-if="ov.paused" :size="16" /><Pause v-else :size="16" />
       </button>
-      <button class="btn" @click="exportCsv"><Download :size="16" />导出</button>
+      <button type="button" class="btn" @click="exportCsv"><Download :size="16" />导出</button>
     </PageHeader>
 
     <PipelineBar :stats="pipeStats" />
