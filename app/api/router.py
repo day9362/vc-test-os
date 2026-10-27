@@ -62,8 +62,11 @@ from app.api.production.precheck import router as precheck_router
 from app.api.production.start import router as production_start_router
 from app.api.production.stop import router as production_stop_router
 from app.api.agent.create_session import router as agent_create_router
+from app.api.agent.list_sessions import router as agent_list_router
 from app.api.agent.get_session import router as agent_get_router
 from app.api.agent.send_message import router as agent_send_router
+from app.api.agent.decide_action import router as agent_decide_router
+from app.api.agent.choose_option import router as agent_choose_router
 from app.api.ai.modules import router as ai_modules_router
 from app.api.ai.usage_summary import router as ai_usage_summary_router
 from app.api.ai.usage_daily import router as ai_usage_daily_router
@@ -132,8 +135,11 @@ api_router.include_router(precheck_router)
 api_router.include_router(production_start_router)
 api_router.include_router(production_stop_router)
 api_router.include_router(agent_create_router)
+api_router.include_router(agent_list_router)
 api_router.include_router(agent_get_router)
 api_router.include_router(agent_send_router)
+api_router.include_router(agent_decide_router)
+api_router.include_router(agent_choose_router)
 api_router.include_router(ai_modules_router)
 api_router.include_router(ai_usage_summary_router)
 api_router.include_router(ai_usage_daily_router)
