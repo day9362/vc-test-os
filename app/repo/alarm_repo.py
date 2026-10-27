@@ -1,4 +1,4 @@
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.orm.alarm import AlarmOrm, AttributionOrm
@@ -15,7 +15,7 @@ class AlarmRepo:
         if machine_id:
             stmt = stmt.where(AlarmOrm.machine_id == machine_id)
         elif fleet_ids:
-            stmt = stmt.where(AlarmOrm.machine_id.in_(fleet_ids))
+            stmt = stmt.where(or_(AlarmOrm.machine_id.in_(fleet_ids), AlarmOrm.machine_id == ""))
         if level:
             stmt = stmt.where(AlarmOrm.level == level)
         return stmt

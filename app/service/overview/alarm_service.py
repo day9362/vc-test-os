@@ -85,7 +85,7 @@ class AlarmService:
         if row is None:
             from app.service.overview.attribution import build_attribution
 
-            row = await build_attribution(self.session, alarm, "系统")
+            row = await build_attribution(self.session, alarm, "系统", automatic=True)
             await self.session.commit()
         return attribution_out(row)
 

@@ -1,15 +1,15 @@
-from uuid import uuid4
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.models.orm.alarm import AiCallOrm, AlarmOrm, AttributionOrm
+from app.models.orm.alarm import AlarmOrm, AttributionOrm
 from app.repo.alarm_repo import AlarmRepo
 
 CATEGORY = {"机台": "equipment", "槽位": "equipment", "漂移": "equipment", "判定": "product", "通信": "communication", "数据": "data"}
 
 
-async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str) -> AttributionOrm:
+async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str, *, automatic: bool = False) -> AttributionOrm:
+    from app.service.ai.usage import UsageService
+
     category = CATEGORY.get(alarm.source, "equipment")
     summary = f"{alarm.machine_id} {alarm.code}：{alarm.message}"
     suggestion = "先确认告警，再按设备配置里的补偿或复位处理"
@@ -21,6 +21,16 @@ async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str) 
     if row is None:
         row = AttributionOrm(alarm_id=alarm.id, created_at=stamp)
         session.add(row)
+    if automatic and await UsageService(session).auto_paused("anomaly"):
+        row.status = "failed"
+        row.category = category
+        row.confidence = None
+        row.summary = "本月 Token 预算已用完，自动归因已暂停"
+        row.evidence = []
+        row.suggestion = "到 Token 统计查看用量，或手动重新归因"
+        row.model = ""
+        row.created_at = stamp
+        return row
     row.status = "done"
     row.category = category
     row.confidence = 0.8
@@ -29,9 +39,7 @@ async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str) 
     row.suggestion = suggestion
     row.model = "rule"
     row.created_at = stamp
-    session.add(AiCallOrm(
-        id=f"call-{uuid4().hex[:8]}",
-        time=stamp,
+    await UsageService(session).record(
         module="anomaly",
         user=actor,
         model="rule",
@@ -40,5 +48,5 @@ async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str) 
         latency_ms=1,
         ok=True,
         ref={"alarm_id": alarm.id},
-    ))
+    )
     return row

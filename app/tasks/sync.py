@@ -114,7 +114,7 @@ async def scan_alarms(session: AsyncSession) -> None:
     created += await _consecutive_alarms(session, open_keys)
     created += _ambient_alarms(session, machines, open_keys)
     for alarm in created:
-        await build_attribution(session, alarm, "系统")
+        await build_attribution(session, alarm, "系统", automatic=True)
         await hub.publish("alarms", alarm_out(alarm_entity(alarm)).model_dump())
 
 

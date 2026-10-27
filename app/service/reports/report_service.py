@@ -1,6 +1,5 @@
 from collections import defaultdict
 from math import sqrt
-from uuid import uuid4
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,10 +22,10 @@ from app.models.dto.report import (
     ReportUsageOut,
 )
 from app.models.entity.user import UserEntity
-from app.models.orm.alarm import AiCallOrm
 from app.models.orm.run import RunOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
+from app.service.ai.usage import UsageService
 from app.service.reports.narrative import grounded_lines, request_summary
 from app.service.reports.pdf import render_report_pdf
 from app.service.reports.store import save_report_pdf
@@ -118,9 +117,7 @@ class ReportService:
             lines = grounded_lines(text, payload)
         except AppError as exc:
             error = exc
-        self.session.add(AiCallOrm(
-            id=f"call-{uuid4().hex[:8]}",
-            time=now_ms(),
+        await UsageService(self.session).record(
             module="report",
             user=user.name,
             model=model_name,
@@ -129,7 +126,7 @@ class ReportService:
             latency_ms=max(now_ms() - started, 1),
             ok=error is None,
             ref={"batch_ids": ids},
-        ))
+        )
         await self.session.commit()
         if error is not None:
             raise error

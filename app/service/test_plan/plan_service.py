@@ -11,12 +11,12 @@ from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.test_plan import DeleteOut, DraftOut, FromTextOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
 from app.models.entity.user import UserEntity
-from app.models.orm.alarm import AiCallOrm
 from app.models.orm.machine import MachineOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.test_plan_repo import TestPlanRepo
 from app.service.agent.draft import generate_draft
+from app.service.ai.usage import UsageService
 from app.service.test_plan.cluster import ingest_cluster_plans, publish_cluster
 from app.service.test_plan.mapping import entity_of, item_out
 from app.service.test_plan.validate import fleet_bounds, validate_plan
@@ -131,11 +131,23 @@ class PlanService:
         if not text.strip():
             raise AppError(400, "BAD_REQUEST", "描述不能为空")
         started = now_ms()
-        body, notes, usage = await generate_draft(text)
+        try:
+            body, notes, usage = await generate_draft(text)
+        except AppError:
+            await UsageService(self.session).record(
+                module="agent.plan",
+                user=user.name,
+                model=settings.anthropic_model or "agent",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=max(now_ms() - started, 1),
+                ok=False,
+                ref={"text": text[:80]},
+            )
+            await self.session.commit()
+            raise
         created = await self.create_draft(body, user, None, source="agent")
-        self.session.add(AiCallOrm(
-            id=f"call-{uuid4().hex[:8]}",
-            time=now_ms(),
+        await UsageService(self.session).record(
             module="agent.plan",
             user=user.name,
             model=settings.anthropic_model or "agent",
@@ -144,7 +156,7 @@ class PlanService:
             latency_ms=max(now_ms() - started, 1),
             ok=True,
             ref={"plan_id": created.plan.plan_id},
-        ))
+        )
         audit_id = self.audit.record(user.user_id, "plan.from_text", "", {"text": text[:80]}, {"plan_id": created.plan.plan_id})
         result = FromTextOut(plan=created.plan, meta=created.meta, notes=notes, usage=usage, audit_id=audit_id)
         await self.session.commit()
