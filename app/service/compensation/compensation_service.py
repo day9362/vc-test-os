@@ -1,6 +1,4 @@
-import asyncio
 import json
-import time
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,9 +25,8 @@ from app.repo.machine_repo import MachineRepo
 from app.repo.run_repo import RunRepo
 from app.service.compensation.bias import estimate_channel_bias, is_golden
 from app.service.compensation.cluster import cluster_json
-from app.service.runs.cluster_ingest import fleet_machine_ids, ingest_run_list, refresh_fleet
-
-_last_ingest = 0.0
+from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
+from app.service.runs.run_service import RunService
 
 
 class CompensationService:
@@ -43,7 +40,9 @@ class CompensationService:
 
     async def channel_bias(self, machine_id: str) -> ChannelBiasOut:
         await self._require(machine_id)
-        await self._ingest()
+        runs = RunService(self.session)
+        await runs._ensure_fleet()
+        runs._schedule_ingest()
         rows = await self.runs.recent_completed(fleet_machine_ids() or None)
         golden = [
             (row.machine_id, int(row.ended_at or 0), row.result if isinstance(row.result, dict) else None)
@@ -151,20 +150,6 @@ class CompensationService:
         if not key or self.redis is None:
             return
         await self.redis.set(f"idem:{key}", json.dumps(body.model_dump()), ex=600)
-
-    async def _ingest(self) -> None:
-        global _last_ingest
-        if not settings.cluster_base_url:
-            return
-        now = time.monotonic()
-        if now - _last_ingest < 15:
-            return
-        _last_ingest = now
-        try:
-            await asyncio.wait_for(ingest_run_list(self.session), timeout=8)
-        except Exception:
-            pass
-
     async def _require(self, machine_id: str):
         found = await self.machines.get_with_slots(machine_id)
         if found is not None:

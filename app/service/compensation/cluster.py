@@ -14,26 +14,18 @@ def cluster_base() -> str:
 
 def _request(method: str, url: str, timeout: float, body: dict | None) -> httpx.Response:
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
         return client.request(method, url, headers=headers, json=body)
 
 
 async def cluster_json(method: str, path: str, body: dict | None = None) -> dict | list:
-    timeout = max(settings.cluster_timeout_s, 30)
-    last_timeout: httpx.TimeoutException | None = None
-    for attempt in range(2):
-        try:
-            response = await asyncio.to_thread(_request, method, f"{cluster_base()}{path}", timeout, body)
-            break
-        except httpx.TimeoutException as exc:
-            last_timeout = exc
-            if attempt == 0 and method.upper() == "GET":
-                continue
-            raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
-        except httpx.HTTPError as exc:
-            raise AppError(502, "CLUSTER_ERROR", "集群请求失败", {"upstream": str(exc)}) from exc
-    else:
-        raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from last_timeout
+    timeout = max(settings.cluster_timeout_s, 12)
+    try:
+        response = await asyncio.to_thread(_request, method, f"{cluster_base()}{path}", timeout, body)
+    except httpx.TimeoutException as exc:
+        raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
+    except httpx.HTTPError as exc:
+        raise AppError(502, "CLUSTER_ERROR", "集群请求失败", {"upstream": str(exc)}) from exc
     try:
         parsed = response.json()
     except Exception:

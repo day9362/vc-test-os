@@ -4,7 +4,6 @@ from math import sqrt
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.report import (
     BatchCompareOut,
@@ -24,7 +23,8 @@ from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
 from app.service.reports.pdf import render_report_pdf
 from app.service.reports.store import save_report_pdf
-from app.service.runs.cluster_ingest import fleet_machine_ids, ingest_run_list, refresh_fleet
+from app.service.runs.cluster_ingest import fleet_machine_ids
+from app.service.runs.run_service import RunService
 
 USL_T01 = 2.8
 BINS = 28
@@ -41,10 +41,9 @@ class ReportService:
         ids = [item.strip() for item in (batch_ids or "").split(",") if item.strip()]
         if not ids:
             raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
-        if settings.cluster_base_url:
-            await refresh_fleet()
-            await ingest_run_list(self.session)
-            await self.session.commit()
+        runs = RunService(self.session)
+        await runs._ensure_fleet()
+        runs._schedule_ingest()
         rows = await self.runs.list_by_batches(ids, fleet_machine_ids() or None)
         grouped: dict[str, list[RunOrm]] = {batch_id: [] for batch_id in ids}
         for row in rows:
