@@ -152,6 +152,23 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
     for row in rows:
         for item in row.fail_items or []:
             fails[str(item)] += 1
+    top_fail = max(fails, key=fails.get) if fails else ""
+    by_machine: dict[str, list[RunOrm]] = defaultdict(list)
+    for row in rows:
+        by_machine[row.machine_id].append(row)
+    ranked = [(machine_id, items) for machine_id, items in by_machine.items() if items]
+    worst_id, worst_n, worst_passed = "", 0, 0
+    if len(ranked) > 1:
+        machine_id, items = min(
+            ranked,
+            key=lambda pair: sum(1 for row in pair[1] if row.passed is True) / len(pair[1]),
+        )
+        worst_id = machine_id
+        worst_n = len(items)
+        worst_passed = sum(1 for row in items if row.passed is True)
+    dts = [float(row.dt01) for row in rows if row.dt01 is not None]
+    dt_sd = _sd(dts)
+    cpk = None if not dts else round((USL_T01 - _mean(dts)) / (3 * dt_sd), 2) if dt_sd else 0
     machines = sorted({row.machine_id for row in rows})
     times = [row.ended_at for row in rows if row.ended_at]
     running = any(row.status == "RUNNING" for row in rows)
@@ -172,7 +189,12 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
         state="running" if running else "done",
         rc_mean=round(_mean(rcs), 3),
         rc_sd=round(_sd(rcs), 3),
-        top_fail=max(fails, key=fails.get) if fails else "",
+        top_fail=top_fail,
+        top_fail_count=fails[top_fail] if top_fail else 0,
+        cpk_t01=cpk,
+        worst_machine_id=worst_id,
+        worst_machine_n=worst_n,
+        worst_machine_passed=worst_passed,
     )
 
 

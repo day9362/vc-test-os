@@ -18,6 +18,11 @@ class BatchStatOut(BaseModel):
     rc_mean: float
     rc_sd: float
     top_fail: str
+    top_fail_count: int = 0
+    cpk_t01: float | None = None
+    worst_machine_id: str = ""
+    worst_machine_n: int = 0
+    worst_machine_passed: int = 0
 
 
 class ReportSummaryOut(BaseModel):

@@ -25,6 +25,11 @@ interface ReportBatch {
   rc_mean: number
   rc_sd: number
   top_fail: string
+  top_fail_count?: number
+  cpk_t01?: number | null
+  worst_machine_id?: string
+  worst_machine_n?: number
+  worst_machine_passed?: number
   started_at: number
   state: 'running' | 'done' | 'stopped'
 }
@@ -89,26 +94,31 @@ const multi = computed(() => list.value.length > 1)
 const skipped = computed(() => asked.value.filter((id) => !list.value.some((batch) => batch.batch_id === id)))
 const hasRc = computed(() => (report.value?.rc_histogram.edges.length ?? 0) > 0)
 
-const finding = computed(() => {
+const findings = computed(() => {
   const data = report.value
-  const s = data?.summary
-  if (!data || !s?.tested) return []
-  const lines = [`测了 ${s.tested} 片：合格 ${s.passed}，不合格 ${s.failed}，中止 ${s.aborted}，良率 ${s.yield_rate.toFixed(2)}%。`]
-  const top = data.fail_pareto[0]
-  if (top) lines.push(`不合格集中在 ${top.item}，${top.count} 片。`)
-  else if (!s.failed && !s.aborted) lines.push('没有不合格，也没有中止。')
-  const ranked = data.machine_yield.filter((item) => item.n > 0)
-  const worst = [...ranked].sort((a, b) => a.passed / a.n - b.passed / b.n)[0]
-  if (worst && ranked.length > 1) {
-    lines.push(`${worst.machine_id} 良率最低，${worst.passed}/${worst.n}。`)
+  if (!data) return []
+  return list.value.map((batch) => ({ batch_id: batch.batch_id, lines: batchLines(batch, data) }))
+})
+
+function batchLines(batch: ReportBatch, data: ReportData) {
+  if (batch.tested <= 0) return ['这个批次还没有测完的片子。']
+  const rate = typeof batch.yield_rate === 'number' ? batch.yield_rate : (100 * batch.passed) / batch.tested
+  const lines = [`测了 ${batch.tested} 片：合格 ${batch.passed}，不合格 ${batch.failed}，中止 ${batch.aborted}，良率 ${rate.toFixed(2)}%。`]
+  if (batch.top_fail) lines.push(`不合格集中在 ${batch.top_fail}，${batch.top_fail_count ?? 0} 片。`)
+  else if (!batch.failed && !batch.aborted) lines.push('没有不合格，也没有中止。')
+  if (batch.worst_machine_id && batch.worst_machine_n) {
+    lines.push(`${batch.worst_machine_id} 良率最低，${batch.worst_machine_passed ?? 0}/${batch.worst_machine_n}。`)
   }
-  if (hasRc.value) lines.push(`Rc 均值 ${s.rc_mean.toFixed(3)} ℃/W，标准差 ${s.rc_sd.toFixed(3)}。`)
+  const counts = data.rc_histogram.counts[batch.batch_id]
+  if (counts?.some((count) => count > 0)) lines.push(`Rc 均值 ${batch.rc_mean.toFixed(3)} ℃/W，标准差 ${batch.rc_sd.toFixed(3)}。`)
   else lines.push('设备没有返回热阻，Rc 先空着。')
-  if (s.cpk_t01 != null) lines.push(`T0−T1 的 Cpk 是 ${s.cpk_t01.toFixed(2)}，上限 ${s.usl_t01} ℃。`)
-  const profile = hottest(data)
+  if (batch.cpk_t01 != null && data.summary.usl_t01 != null) {
+    lines.push(`T0−T1 的 Cpk 是 ${batch.cpk_t01.toFixed(2)}，上限 ${data.summary.usl_t01} ℃。`)
+  }
+  const profile = hottest(data, batch.batch_id)
   if (profile) lines.push(`温差最大的是 ${profile.item}，均值 ${profile.value.toFixed(3)} ℃。`)
   return lines
-})
+}
 
 async function exportPdf() {
   if (!asked.value.length) return
@@ -127,16 +137,16 @@ async function exportPdf() {
   }
 }
 
-function hottest(data: ReportData) {
+function hottest(data: ReportData, batchId: string) {
+  const values = data.delta_profile.mean[batchId]
+  if (!values) return null
   let item = ''
   let value = -Infinity
-  for (const values of Object.values(data.delta_profile.mean)) {
-    for (let index = 0; index < values.length; index += 1) {
-      const current = values[index]
-      if (current != null && current > value) {
-        value = current
-        item = data.delta_profile.items[index]
-      }
+  for (let index = 0; index < values.length; index += 1) {
+    const current = values[index]
+    if (current != null && current > value) {
+      value = current
+      item = data.delta_profile.items[index]
     }
   }
   return item ? { item, value } : null
@@ -263,10 +273,13 @@ const compareOpt = computed(() => {
         <Kpi label="机台" :value="sum.machine_count" unit="台" />
       </div>
 
-      <Panel v-if="finding.length" title="结果" code="FROM RUNS">
-        <ol class="sum">
-          <li v-for="(line, index) in finding" :key="index">{{ line }}</li>
-        </ol>
+      <Panel v-if="findings.length" title="结果" code="FROM RUNS">
+        <section v-for="section in findings" :key="section.batch_id" class="batch-sum">
+          <p v-if="findings.length > 1" class="mono fs-sm fw-6">{{ section.batch_id }}</p>
+          <ol class="sum">
+            <li v-for="(line, index) in section.lines" :key="index">{{ line }}</li>
+          </ol>
+        </section>
       </Panel>
 
       <Panel v-if="multi" title="批次对比" code="YIELD · RC" :icon="BarChart3">
@@ -317,5 +330,6 @@ const compareOpt = computed(() => {
 <style scoped>
 .rh { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 4px; }
 .rh h1 { font-size: var(--fs-xl); font-family: var(--font-mono); margin: 2px 0; }
-.sum { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
+.batch-sum + .batch-sum { margin-top: 14px; }
+.sum { margin: 4px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
 </style>
