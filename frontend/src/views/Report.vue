@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, BarChart3, Download } from 'lucide-vue-next'
+import { ArrowLeft, BarChart3, Bot, Download, Sparkles } from 'lucide-vue-next'
 import Kpi from '@/components/Kpi.vue'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { api } from '@/api/http'
+import { api, apiBlob, currentToken } from '@/api/http'
 import { useAppStore } from '@/stores/app'
 import { useTokens } from '@/composables/useTokens'
 import { dt } from '@/utils/format'
@@ -25,6 +25,11 @@ interface ReportBatch {
   rc_mean: number
   rc_sd: number
   top_fail: string
+  top_fail_count?: number
+  cpk_t01?: number | null
+  worst_machine_id?: string
+  worst_machine_n?: number
+  worst_machine_passed?: number
   started_at: number
   state: 'running' | 'done' | 'stopped'
 }
@@ -57,6 +62,27 @@ const report = ref<ReportData | null>(null)
 const error = ref('')
 const loading = ref(false)
 const asked = computed(() => String(route.query.b ?? '').split(',').map((id) => id.trim()).filter(Boolean))
+const summaryLines = ref<string[]>([])
+const summaryModel = ref('')
+const summaryError = ref('')
+const summaryBusy = ref(false)
+interface FigureItem {
+  figure_id: string
+  status: string
+  prompt: string
+  title: string
+  echarts_option: Record<string, unknown> | null
+  png_url: string | null
+  code: string
+  results: string[][]
+  error: string | null
+  step: string
+}
+const figures = ref<FigureItem[]>([])
+const figurePrompt = ref('')
+const figureBusy = ref(false)
+const figureError = ref('')
+const pngUrls = ref<Record<string, string>>({})
 
 async function load() {
   if (!asked.value.length) {
@@ -66,8 +92,14 @@ async function load() {
   }
   loading.value = true
   error.value = ''
+  summaryLines.value = []
+  summaryModel.value = ''
+  summaryError.value = ''
+  figures.value = []
+  figureError.value = ''
   try {
     report.value = await api<ReportData>(`/reports/data?batch_ids=${encodeURIComponent(asked.value.join(','))}`)
+    await loadFigures().catch(() => { figures.value = [] })
   } catch (err) {
     report.value = null
     error.value = err instanceof Error ? err.message : '报告加载失败'
@@ -89,26 +121,128 @@ const multi = computed(() => list.value.length > 1)
 const skipped = computed(() => asked.value.filter((id) => !list.value.some((batch) => batch.batch_id === id)))
 const hasRc = computed(() => (report.value?.rc_histogram.edges.length ?? 0) > 0)
 
-const finding = computed(() => {
+const findings = computed(() => {
   const data = report.value
-  const s = data?.summary
-  if (!data || !s?.tested) return []
-  const lines = [`测了 ${s.tested} 片：合格 ${s.passed}，不合格 ${s.failed}，中止 ${s.aborted}，良率 ${s.yield_rate.toFixed(2)}%。`]
-  const top = data.fail_pareto[0]
-  if (top) lines.push(`不合格集中在 ${top.item}，${top.count} 片。`)
-  else if (!s.failed && !s.aborted) lines.push('没有不合格，也没有中止。')
-  const ranked = data.machine_yield.filter((item) => item.n > 0)
-  const worst = [...ranked].sort((a, b) => a.passed / a.n - b.passed / b.n)[0]
-  if (worst && ranked.length > 1) {
-    lines.push(`${worst.machine_id} 良率最低，${worst.passed}/${worst.n}。`)
+  if (!data) return []
+  return list.value.map((batch) => ({ batch_id: batch.batch_id, lines: batchLines(batch, data) }))
+})
+
+function batchLines(batch: ReportBatch, data: ReportData) {
+  if (batch.tested <= 0) return ['这个批次还没有测完的片子。']
+  const rate = typeof batch.yield_rate === 'number' ? batch.yield_rate : (100 * batch.passed) / batch.tested
+  const lines = [`测了 ${batch.tested} 片：合格 ${batch.passed}，不合格 ${batch.failed}，中止 ${batch.aborted}，良率 ${rate.toFixed(2)}%。`]
+  if (batch.top_fail) lines.push(`不合格集中在 ${batch.top_fail}，${batch.top_fail_count ?? 0} 片。`)
+  else if (!batch.failed && !batch.aborted) lines.push('没有不合格，也没有中止。')
+  if (batch.worst_machine_id && batch.worst_machine_n) {
+    lines.push(`${batch.worst_machine_id} 良率最低，${batch.worst_machine_passed ?? 0}/${batch.worst_machine_n}。`)
   }
-  if (hasRc.value) lines.push(`Rc 均值 ${s.rc_mean.toFixed(3)} ℃/W，标准差 ${s.rc_sd.toFixed(3)}。`)
+  const counts = data.rc_histogram.counts[batch.batch_id]
+  if (counts?.some((count) => count > 0)) lines.push(`Rc 均值 ${batch.rc_mean.toFixed(3)} ℃/W，标准差 ${batch.rc_sd.toFixed(3)}。`)
   else lines.push('设备没有返回热阻，Rc 先空着。')
-  if (s.cpk_t01 != null) lines.push(`T0−T1 的 Cpk 是 ${s.cpk_t01.toFixed(2)}，上限 ${s.usl_t01} ℃。`)
-  const profile = hottest(data)
+  if (batch.cpk_t01 != null && data.summary.usl_t01 != null) {
+    lines.push(`T0−T1 的 Cpk 是 ${batch.cpk_t01.toFixed(2)}，上限 ${data.summary.usl_t01} ℃。`)
+  }
+  const profile = hottest(data, batch.batch_id)
   if (profile) lines.push(`温差最大的是 ${profile.item}，均值 ${profile.value.toFixed(3)} ℃。`)
   return lines
-})
+}
+
+async function loadSummary() {
+  if (!asked.value.length || summaryBusy.value) return
+  summaryBusy.value = true
+  summaryError.value = ''
+  try {
+    const body = await api<{ lines: string[]; model: string }>('/reports/summary', {
+      method: 'POST',
+      body: JSON.stringify({ batch_ids: asked.value }),
+    })
+    summaryLines.value = body.lines
+    summaryModel.value = body.model
+  } catch (err) {
+    summaryLines.value = []
+    summaryModel.value = ''
+    summaryError.value = err instanceof Error ? err.message : '总结没有生成'
+  } finally {
+    summaryBusy.value = false
+  }
+}
+
+async function loadFigures() {
+  if (!asked.value.length) return
+  figures.value = await api<FigureItem[]>(`/reports/figures?batch_ids=${encodeURIComponent(asked.value.join(','))}`)
+  await Promise.all(figures.value.map((item) => attachPng(item)))
+}
+
+async function createFigure() {
+  const prompt = figurePrompt.value.trim()
+  if (!prompt || figureBusy.value || !asked.value.length) return
+  figureBusy.value = true
+  figureError.value = ''
+  try {
+    const created = await api<{ figure_id: string }>('/reports/figures', {
+      method: 'POST',
+      body: JSON.stringify({ batch_ids: asked.value, prompt }),
+    })
+    figurePrompt.value = ''
+    await loadFigures()
+    await followFigure(created.figure_id)
+  } catch (err) {
+    figureError.value = err instanceof Error ? err.message : '分析没有开始'
+  } finally {
+    figureBusy.value = false
+  }
+}
+
+async function followFigure(id: string) {
+  const token = currentToken()
+  if (!token) return
+  const res = await fetch(`/api/v1/reports/figures/${id}/events`, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok || !res.body) {
+    await refreshFigure(id)
+    return
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const chunk = await reader.read()
+    if (chunk.done) break
+    buffer += decoder.decode(chunk.value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() || ''
+    for (const part of parts) {
+      const line = part.split('\n').find((item) => item.startsWith('data:'))
+      if (!line) continue
+      const payload = JSON.parse(line.slice(5)) as { step: string }
+      const current = figures.value.find((item) => item.figure_id === id)
+      if (current && payload.step !== 'done') current.step = payload.step
+      if (payload.step === 'done') {
+        await refreshFigure(id)
+        return
+      }
+    }
+  }
+  await refreshFigure(id)
+}
+
+async function refreshFigure(id: string) {
+  const body = await api<FigureItem>(`/reports/figures/${id}`)
+  const index = figures.value.findIndex((item) => item.figure_id === id)
+  if (index < 0) figures.value.push(body)
+  else figures.value[index] = body
+  await attachPng(body)
+}
+
+async function attachPng(item: FigureItem) {
+  if (item.echarts_option || !item.png_url || pngUrls.value[item.figure_id]) return
+  const blob = await apiBlob(`/reports/figures/${item.figure_id}.png`)
+  pngUrls.value[item.figure_id] = URL.createObjectURL(blob)
+}
+
+async function removeFigure(id: string) {
+  await api(`/reports/figures/${id}`, { method: 'DELETE' })
+  figures.value = figures.value.filter((item) => item.figure_id !== id)
+}
 
 async function exportPdf() {
   if (!asked.value.length) return
@@ -127,16 +261,16 @@ async function exportPdf() {
   }
 }
 
-function hottest(data: ReportData) {
+function hottest(data: ReportData, batchId: string) {
+  const values = data.delta_profile.mean[batchId]
+  if (!values) return null
   let item = ''
   let value = -Infinity
-  for (const values of Object.values(data.delta_profile.mean)) {
-    for (let index = 0; index < values.length; index += 1) {
-      const current = values[index]
-      if (current != null && current > value) {
-        value = current
-        item = data.delta_profile.items[index]
-      }
+  for (let index = 0; index < values.length; index += 1) {
+    const current = values[index]
+    if (current != null && current > value) {
+      value = current
+      item = data.delta_profile.items[index]
     }
   }
   return item ? { item, value } : null
@@ -263,10 +397,25 @@ const compareOpt = computed(() => {
         <Kpi label="机台" :value="sum.machine_count" unit="台" />
       </div>
 
-      <Panel v-if="finding.length" title="结果" code="FROM RUNS">
-        <ol class="sum">
-          <li v-for="(line, index) in finding" :key="index">{{ line }}</li>
+      <Panel v-if="list.length" title="AI 总结" code="8.2" :icon="Sparkles">
+        <template #actions>
+          <button type="button" class="btn btn-sm" :disabled="summaryBusy" @click="loadSummary">{{ summaryBusy ? '正在写…' : '生成总结' }}</button>
+        </template>
+        <p v-if="summaryError" class="t-danger">{{ summaryError }}</p>
+        <ol v-else-if="summaryLines.length" class="sum">
+          <li v-for="(line, index) in summaryLines" :key="index">{{ line }}</li>
         </ol>
+        <p v-else class="muted">用这份报告里已经算好的数字写一段总结。句子里的数字必须和报告一致。</p>
+        <p v-if="summaryModel" class="fs-xs muted">{{ summaryModel }}</p>
+      </Panel>
+
+      <Panel v-if="findings.length" title="结果" code="FROM RUNS">
+        <section v-for="section in findings" :key="section.batch_id" class="batch-sum">
+          <p v-if="findings.length > 1" class="mono fs-sm fw-6">{{ section.batch_id }}</p>
+          <ol class="sum">
+            <li v-for="(line, index) in section.lines" :key="index">{{ line }}</li>
+          </ol>
+        </section>
       </Panel>
 
       <Panel v-if="multi" title="批次对比" code="YIELD · RC" :icon="BarChart3">
@@ -310,6 +459,30 @@ const compareOpt = computed(() => {
           </table>
         </div>
       </Panel>
+
+      <Panel v-if="list.length" title="Agent 补充分析" code="8.3" :icon="Bot">
+        <div class="row">
+          <input v-model="figurePrompt" class="input grow" placeholder="例如：按槽位号画 Rc 箱线图" :disabled="figureBusy" @keydown.enter="createFigure" />
+          <button type="button" class="btn btn-sm" :disabled="figureBusy || !figurePrompt.trim()" @click="createFigure">{{ figureBusy ? '正在分析…' : '生成' }}</button>
+        </div>
+        <p v-if="figureError" class="t-danger">{{ figureError }}</p>
+        <p v-else-if="!figures.length" class="muted">写一句分析要求。图会用这些批次的测试记录算出来，加在这份报告上。</p>
+        <article v-for="item in figures" :key="item.figure_id" class="figure">
+          <div class="row-between">
+            <b>{{ item.title || item.prompt }}</b>
+            <button type="button" class="btn btn-ghost btn-sm" @click="removeFigure(item.figure_id)">移除</button>
+          </div>
+          <p v-if="item.status === 'running'" class="fs-sm muted">{{ item.step || '正在分析' }}</p>
+          <p v-else-if="item.error" class="t-danger">{{ item.error }}</p>
+          <EChart v-if="item.echarts_option" :option="item.echarts_option" :height="240" />
+          <img v-else-if="pngUrls[item.figure_id]" :src="pngUrls[item.figure_id]" alt="" class="png" />
+          <table v-if="item.results.length" class="table">
+            <tbody>
+              <tr v-for="(pair, index) in item.results" :key="index"><td>{{ pair[0] }}</td><td class="num">{{ pair[1] }}</td></tr>
+            </tbody>
+          </table>
+        </article>
+      </Panel>
     </template>
   </div>
 </template>
@@ -317,5 +490,8 @@ const compareOpt = computed(() => {
 <style scoped>
 .rh { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 4px; }
 .rh h1 { font-size: var(--fs-xl); font-family: var(--font-mono); margin: 2px 0; }
-.sum { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
+.batch-sum + .batch-sum { margin-top: 14px; }
+.sum { margin: 4px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
+.figure { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.png { width: 100%; max-height: 280px; object-fit: contain; }
 </style>

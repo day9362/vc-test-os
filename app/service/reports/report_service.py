@@ -1,9 +1,12 @@
 from collections import defaultdict
 from math import sqrt
+from uuid import uuid4
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import now_ms
+from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.report import (
     BatchCompareOut,
@@ -15,12 +18,16 @@ from app.models.dto.report import (
     ReportDataOut,
     ReportExportIn,
     ReportExportOut,
+    ReportNarrativeOut,
     ReportSummaryOut,
+    ReportUsageOut,
 )
 from app.models.entity.user import UserEntity
+from app.models.orm.alarm import AiCallOrm
 from app.models.orm.run import RunOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
+from app.service.reports.narrative import grounded_lines, request_summary
 from app.service.reports.pdf import render_report_pdf
 from app.service.reports.store import save_report_pdf
 from app.service.runs.cluster_ingest import fleet_machine_ids
@@ -91,6 +98,43 @@ class ReportService:
             compare=[BatchCompareOut(batch_id=item.batch_id, yield_rate=round(100 * item.passed / item.tested, 2), rc_mean=item.rc_mean) for item in active],
         )
 
+    async def summary(self, batch_ids: list[str], user: UserEntity) -> ReportNarrativeOut:
+        ids = [item.strip() for item in batch_ids if item and item.strip()]
+        if not ids:
+            raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
+        data = await self.data(",".join(ids))
+        if not any(item.tested > 0 for item in data.batches):
+            raise AppError(400, "BAD_REQUEST", "所选批次还没有测完的片子")
+        payload = data.model_dump(mode="json")
+        payload["batch_count"] = sum(1 for item in data.batches if item.tested > 0)
+        started = now_ms()
+        model_name = settings.anthropic_model or "deepseek-flash"
+        input_tokens = 0
+        output_tokens = 0
+        error: AppError | None = None
+        lines: list[str] = []
+        try:
+            text, input_tokens, output_tokens, model_name = await request_summary(payload)
+            lines = grounded_lines(text, payload)
+        except AppError as exc:
+            error = exc
+        self.session.add(AiCallOrm(
+            id=f"call-{uuid4().hex[:8]}",
+            time=now_ms(),
+            module="report",
+            user=user.name,
+            model=model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=max(now_ms() - started, 1),
+            ok=error is None,
+            ref={"batch_ids": ids},
+        ))
+        await self.session.commit()
+        if error is not None:
+            raise error
+        return ReportNarrativeOut(lines=lines, model=model_name, usage=ReportUsageOut(input=input_tokens, output=output_tokens))
+
     async def export(self, body: ReportExportIn, user: UserEntity, idempotency_key: str | None) -> ReportExportOut:
         cached = await self._cached(idempotency_key)
         if cached:
@@ -152,6 +196,23 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
     for row in rows:
         for item in row.fail_items or []:
             fails[str(item)] += 1
+    top_fail = max(fails, key=fails.get) if fails else ""
+    by_machine: dict[str, list[RunOrm]] = defaultdict(list)
+    for row in rows:
+        by_machine[row.machine_id].append(row)
+    ranked = [(machine_id, items) for machine_id, items in by_machine.items() if items]
+    worst_id, worst_n, worst_passed = "", 0, 0
+    if len(ranked) > 1:
+        machine_id, items = min(
+            ranked,
+            key=lambda pair: sum(1 for row in pair[1] if row.passed is True) / len(pair[1]),
+        )
+        worst_id = machine_id
+        worst_n = len(items)
+        worst_passed = sum(1 for row in items if row.passed is True)
+    dts = [float(row.dt01) for row in rows if row.dt01 is not None]
+    dt_sd = _sd(dts)
+    cpk = None if not dts else round((USL_T01 - _mean(dts)) / (3 * dt_sd), 2) if dt_sd else 0
     machines = sorted({row.machine_id for row in rows})
     times = [row.ended_at for row in rows if row.ended_at]
     running = any(row.status == "RUNNING" for row in rows)
@@ -172,7 +233,12 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
         state="running" if running else "done",
         rc_mean=round(_mean(rcs), 3),
         rc_sd=round(_sd(rcs), 3),
-        top_fail=max(fails, key=fails.get) if fails else "",
+        top_fail=top_fail,
+        top_fail_count=fails[top_fail] if top_fail else 0,
+        cpk_t01=cpk,
+        worst_machine_id=worst_id,
+        worst_machine_n=worst_n,
+        worst_machine_passed=worst_passed,
     )
 
 

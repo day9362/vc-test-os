@@ -55,6 +55,22 @@ const history = ref<CompWrite[]>([])
 const suggest = ref<Suggestion[]>([])
 const drifts = ref<DriftRow[]>([])
 const driftsSupported = ref(true)
+const sectionError = ref<Record<string, string>>({})
+
+function reasonOf(err: unknown) {
+  return err instanceof Error && err.message ? err.message : '请求失败'
+}
+
+async function loadSection<T>(id: string, key: string, run: () => Promise<T>, empty: T): Promise<T> {
+  try {
+    const value = await run()
+    if (cur.value === id) sectionError.value[key] = ''
+    return value
+  } catch (err) {
+    if (cur.value === id) sectionError.value[key] = reasonOf(err)
+    return empty
+  }
+}
 const alarms = ref<Alarm[]>([])
 const plans = ref<PlanUse[]>([])
 const mode = ref<'add' | 'set'>('add')
@@ -70,11 +86,12 @@ async function loadMachines() {
 async function loadDetail() {
   const id = cur.value
   if (!id) return
+  sectionError.value = {}
   const [alarmPage, historyPage, planPage, rc] = await Promise.all([
     api<{ items: Alarm[] }>(`/alarms?machine_id=${id}&limit=100`),
     api<{ items: PlanUse[] }>(`/machines/${id}/plan-history`),
-    api<{ items: CompWrite[] }>(`/machines/${id}/compensation/history`).catch(() => ({ items: [] })),
-    api<{ items: { machine_id: string; bias: number }[] }>('/stats/rc-bias').catch(() => ({ items: [] })),
+    loadSection(id, 'history', () => api<{ items: CompWrite[] }>(`/machines/${id}/compensation/history`), { items: [] }),
+    loadSection(id, 'rc', () => api<{ items: { machine_id: string; bias: number }[] }>('/stats/rc-bias'), { items: [] }),
   ])
   if (cur.value !== id) return
   alarms.value = alarmPage.items
@@ -82,9 +99,9 @@ async function loadDetail() {
   history.value = planPage.items
   rcItems.value = rc.items
   const [biasPage, suggestionPage, driftPage] = await Promise.all([
-    api<{ items: BiasItem[]; threshold_c: number }>(`/machines/${id}/channel-bias`).catch(() => ({ items: [], threshold_c: 0.15 })),
-    api<{ items: Suggestion[] }>(`/machines/${id}/compensation/suggestion`).catch(() => ({ items: [] })),
-    api<{ items: DriftRow[]; supported: boolean }>(`/machines/${id}/drifts`).catch(() => ({ items: [], supported: false })),
+    loadSection(id, 'bias', () => api<{ items: BiasItem[]; threshold_c: number }>(`/machines/${id}/channel-bias`), { items: [], threshold_c: 0.15 }),
+    loadSection(id, 'suggest', () => api<{ items: Suggestion[] }>(`/machines/${id}/compensation/suggestion`), { items: [] }),
+    loadSection(id, 'drifts', () => api<{ items: DriftRow[]; supported: boolean }>(`/machines/${id}/drifts`), { items: [], supported: false }),
   ])
   if (cur.value !== id) return
   bias.value = biasPage.items
@@ -97,7 +114,7 @@ async function loadDetail() {
     savedComp.value = []
     return
   }
-  const current = await api<{ items: CompItem[] }>(`/machines/${id}/compensation`).catch(() => ({ items: [] }))
+  const current = await loadSection(id, 'comp', () => api<{ items: CompItem[] }>(`/machines/${id}/compensation`), { items: [] })
   if (cur.value !== id) return
   comp.value = current.items.map((item) => ({ ...item }))
   savedComp.value = current.items.map((item) => ({ ...item }))
@@ -286,16 +303,20 @@ function channels(rows: CompItem[]) {
         <template v-else-if="tab === 'calib'">
           <div class="grid g-3">
             <Panel class="span-2" title="通道偏差" code="标准样品" :icon="Crosshair">
-              <EChart v-if="biasOpt" :option="biasOpt" :height="230" />
+              <p v-if="sectionError.bias" class="fail">配置失败 · {{ sectionError.bias }}</p>
+              <EChart v-else-if="biasOpt" :option="biasOpt" :height="230" />
               <p v-else class="muted">还没有这台机台的标准样品复测结果。</p>
             </Panel>
             <Panel title="Rc 偏差" code="相对全线中位数" :icon="Microscope">
-              <div class="row" style="align-items: baseline; margin-bottom: 4px">
-                <b class="num" style="font-size: var(--fs-2xl)">{{ rcOf == null ? '—' : `${rcOf > 0 ? '+' : ''}${rcOf.toFixed(3)}` }}</b>
-                <span class="fs-sm muted">℃/W</span>
-              </div>
-              <EChart v-if="rcItems.length" :option="fleetRcOpt" :height="170" />
-              <p v-else class="muted">还没有可比较的热阻。</p>
+              <p v-if="sectionError.rc" class="fail">配置失败 · {{ sectionError.rc }}</p>
+              <template v-else>
+                <div class="row" style="align-items: baseline; margin-bottom: 4px">
+                  <b class="num" style="font-size: var(--fs-2xl)">{{ rcOf == null ? '—' : `${rcOf > 0 ? '+' : ''}${rcOf.toFixed(3)}` }}</b>
+                  <span class="fs-sm muted">℃/W</span>
+                </div>
+                <EChart v-if="rcItems.length" :option="fleetRcOpt" :height="170" />
+                <p v-else class="muted">还没有可比较的热阻。</p>
+              </template>
             </Panel>
           </div>
           <div class="grid g-2">
@@ -312,7 +333,8 @@ function channels(rows: CompItem[]) {
                       <td class="r num" :class="{ 't-danger fw-6': Math.abs(row.current) > threshold }">{{ row.current > 0 ? '+' : '' }}{{ row.current.toFixed(3) }} ℃</td>
                       <td><span class="tag" :class="Math.abs(row.current) > threshold ? 'danger' : 'ok'">{{ Math.abs(row.current) > threshold ? '超阈值' : '正常' }}</span></td>
                     </tr>
-                    <tr v-if="!drifts.length"><td colspan="5" class="c muted" style="height: 64px">{{ driftsSupported ? '没有注入漂移' : '当前不是仿真模式，不读取注入漂移' }}</td></tr>
+                    <tr v-if="sectionError.drifts"><td colspan="5" class="c fail">配置失败 · {{ sectionError.drifts }}</td></tr>
+                    <tr v-else-if="!drifts.length"><td colspan="5" class="c muted" style="height: 64px">{{ driftsSupported ? '没有注入漂移' : '当前不是仿真模式，不读取注入漂移' }}</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -328,7 +350,8 @@ function channels(rows: CompItem[]) {
                       <td class="mono">{{ row.mode }}</td>
                       <td class="fs-sm">{{ channels(row.compensation || []) }}</td>
                     </tr>
-                    <tr v-if="!history.length"><td colspan="4" class="c muted" style="height: 64px">还没有从这里写入过补偿</td></tr>
+                    <tr v-if="sectionError.history"><td colspan="4" class="c fail">配置失败 · {{ sectionError.history }}</td></tr>
+                    <tr v-else-if="!history.length"><td colspan="4" class="c muted" style="height: 64px">还没有从这里写入过补偿</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -341,6 +364,8 @@ function channels(rows: CompItem[]) {
                   <button :aria-pressed="mode === 'set'" @click="mode = 'set'">覆盖</button>
                 </div>
               </template>
+              <p v-if="sectionError.suggest" class="fail">配置失败 · {{ sectionError.suggest }}</p>
+              <p v-if="sectionError.comp" class="fail">配置失败 · {{ sectionError.comp }}</p>
               <div v-if="suggest.length" class="sug">
                 <Bot :size="14" />
                 <span class="grow fs-sm">{{ suggest.map((item) => `${item.channel} ${item.value > 0 ? '+' : ''}${item.value}（${item.reason}）`).join('；') }}</span>
@@ -354,7 +379,7 @@ function channels(rows: CompItem[]) {
                     <td class="r"><input v-model.number="item.value" class="input num cell" type="number" step="0.01" :aria-label="`${item.channel} 补偿`" /></td>
                     <td><button class="btn btn-ghost btn-icon btn-sm" @click="comp.splice(index, 1)">×</button></td>
                   </tr>
-                  <tr v-if="!comp.length"><td colspan="3" class="c muted">未设置补偿</td></tr>
+                  <tr v-if="!comp.length && !sectionError.comp"><td colspan="3" class="c muted">未设置补偿</td></tr>
                 </tbody>
               </table>
               <div class="row" style="margin-top: 10px">
@@ -414,6 +439,7 @@ function channels(rows: CompItem[]) {
 </template>
 
 <style scoped>
+.fail { color: var(--c-danger); font-size: var(--fs-sm); margin: 8px 0; }
 .lay { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px; align-items: start; }
 .side { position: sticky; top: 0; }
 .pad { padding: 10px; border-bottom: var(--bw) solid var(--c-border); }

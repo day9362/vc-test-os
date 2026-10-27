@@ -18,6 +18,11 @@ class BatchStatOut(BaseModel):
     rc_mean: float
     rc_sd: float
     top_fail: str
+    top_fail_count: int = 0
+    cpk_t01: float | None = None
+    worst_machine_id: str = ""
+    worst_machine_n: int = 0
+    worst_machine_passed: int = 0
 
 
 class ReportSummaryOut(BaseModel):
@@ -80,3 +85,41 @@ class ReportExportIn(BaseModel):
 
 class ReportExportOut(BaseModel):
     url: str
+
+
+class ReportSummaryIn(BaseModel):
+    batch_ids: list[str]
+
+
+class ReportUsageOut(BaseModel):
+    input: int
+    output: int
+
+
+class ReportNarrativeOut(BaseModel):
+    lines: list[str]
+    model: str
+    usage: ReportUsageOut
+
+
+class FigureIn(BaseModel):
+    batch_ids: list[str]
+    prompt: str
+
+
+class FigureCreatedOut(BaseModel):
+    figure_id: str
+
+
+class FigureOut(BaseModel):
+    figure_id: str
+    status: str
+    prompt: str
+    title: str
+    echarts_option: dict | None = None
+    png_url: str | None = None
+    code: str
+    results: list[list[str]]
+    usage: ReportUsageOut
+    error: str | None = None
+    step: str = ""
