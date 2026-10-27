@@ -21,7 +21,7 @@ interface ReportBatch {
   passed: number
   failed: number
   aborted: number
-  yield_rate: number
+  yield_rate?: number
   rc_mean: number
   rc_sd: number
   top_fail: string
@@ -77,6 +77,12 @@ async function load() {
 }
 watch(() => route.query.b, load, { immediate: true })
 
+function batchYield(batch: { passed: number; tested: number; yield_rate?: number }) {
+  if (batch.tested <= 0) return '—'
+  const rate = typeof batch.yield_rate === 'number' ? batch.yield_rate : (100 * batch.passed) / batch.tested
+  return `${rate.toFixed(2)}%`
+}
+
 const list = computed(() => report.value?.batches ?? [])
 const sum = computed(() => report.value?.summary)
 const multi = computed(() => list.value.length > 1)
@@ -91,8 +97,9 @@ const finding = computed(() => {
   const top = data.fail_pareto[0]
   if (top) lines.push(`不合格集中在 ${top.item}，${top.count} 片。`)
   else if (!s.failed && !s.aborted) lines.push('没有不合格，也没有中止。')
-  const worst = data.machine_yield[0]
-  if (worst && data.machine_yield.length > 1) {
+  const ranked = data.machine_yield.filter((item) => item.n > 0)
+  const worst = [...ranked].sort((a, b) => a.passed / a.n - b.passed / b.n)[0]
+  if (worst && ranked.length > 1) {
     lines.push(`${worst.machine_id} 良率最低，${worst.passed}/${worst.n}。`)
   }
   if (hasRc.value) lines.push(`Rc 均值 ${s.rc_mean.toFixed(3)} ℃/W，标准差 ${s.rc_sd.toFixed(3)}。`)
@@ -295,7 +302,7 @@ const compareOpt = computed(() => {
                 <td>{{ batch.model }}</td>
                 <td class="fs-sm">{{ batch.plan_name || batch.plan_id }} v{{ batch.plan_version }}</td>
                 <td class="r num">{{ batch.tested }}</td>
-                <td class="r num">{{ batch.yield_rate.toFixed(2) }}%</td>
+                <td class="r num">{{ batchYield(batch) }}</td>
                 <td class="r num">{{ batch.rc_mean ? batch.rc_mean.toFixed(3) : '—' }}</td>
                 <td class="mono fs-xs">{{ batch.top_fail || '—' }}</td>
               </tr>

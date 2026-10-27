@@ -18,7 +18,7 @@ import { ago, dt } from '@/utils/format'
 interface DeviceMachine extends Machine { last_sync_at: number }
 interface BiasItem { channel: string; value: number }
 interface CompItem { channel: string; value: number }
-interface CompWrite { at: number; actor: string; mode: string; before: CompItem[]; after: CompItem[]; audit_id: string }
+interface CompWrite { time: number; actor: string; mode: string; compensation: CompItem[]; audit_id: string }
 interface Suggestion { channel: string; value: number; reason: string }
 interface DriftRow { drift_id: string; channel: string; kind: string; value: number; current: number }
 interface Suggestion { channel: string; value: number; reason: string }
@@ -97,10 +97,10 @@ async function loadDetail() {
     savedComp.value = []
     return
   }
-  const current = await api<{ compensation: CompItem[] }>(`/machines/${id}/compensation`).catch(() => ({ compensation: [] }))
+  const current = await api<{ items: CompItem[] }>(`/machines/${id}/compensation`).catch(() => ({ items: [] }))
   if (cur.value !== id) return
-  comp.value = current.compensation.map((item) => ({ ...item }))
-  savedComp.value = current.compensation.map((item) => ({ ...item }))
+  comp.value = current.items.map((item) => ({ ...item }))
+  savedComp.value = current.items.map((item) => ({ ...item }))
 }
 
 watch(cur, () => { loadDetail() })
@@ -323,10 +323,10 @@ function channels(rows: CompItem[]) {
                   <thead><tr><th>时间</th><th>操作者</th><th>方式</th><th>改成</th></tr></thead>
                   <tbody>
                     <tr v-for="row in history" :key="row.audit_id">
-                      <td class="num fs-sm">{{ dt(row.at) }}</td>
+                      <td class="num fs-sm">{{ dt(row.time) }}</td>
                       <td>{{ row.actor }}</td>
                       <td class="mono">{{ row.mode }}</td>
-                      <td class="fs-sm">{{ channels(row.after) }}</td>
+                      <td class="fs-sm">{{ channels(row.compensation || []) }}</td>
                     </tr>
                     <tr v-if="!history.length"><td colspan="4" class="c muted" style="height: 64px">还没有从这里写入过补偿</td></tr>
                   </tbody>

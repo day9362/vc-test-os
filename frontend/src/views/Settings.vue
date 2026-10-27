@@ -64,7 +64,7 @@ const scenarios = ref(SCENARIOS.map((item) => ({ name: item.name, text: item.tex
 const faults = ref(faultCatalog.map((item) => ({ kind: item.kind, layer: item.layer })))
 const scenario = ref(scenarios.value[0].name)
 const fault = ref(faults.value[0].kind)
-const jobRuns = ref<Record<string, { last_started_at: number | null; duration_ms: number | null; ok: boolean | null }>>({})
+const jobRuns = ref<Record<string, { last_at: number | null; elapsed_ms: number | null; failed: boolean | null }>>({})
 const auditRows = ref<{ audit_id: string; time: number; actor: string; action: string; machine_id: string }[]>([])
 const auditHint = ref('打开本页会读取最近的写操作')
 
@@ -81,9 +81,9 @@ async function loadAudit() {
 
 function jobText(key: string) {
   const row = jobRuns.value[key]
-  if (!row || row.last_started_at == null) return '还没有跑过'
-  const state = row.ok ? '成功' : '失败'
-  return `${state} · ${ago(row.last_started_at)} · ${row.duration_ms ?? 0} ms`
+  if (!row || row.last_at == null) return '还没有跑过'
+  const state = row.failed ? '失败' : '成功'
+  return `${state} · ${ago(row.last_at)} · ${row.elapsed_ms ?? 0} ms`
 }
 
 async function setSpeed(speed: number) {
@@ -146,7 +146,7 @@ onMounted(async () => {
     app.toast({ kind: 'danger', title: '设置没有读到', desc: err instanceof Error ? err.message : '' })
   }
   const [status, fleet] = await Promise.all([
-    api<{ items: { key: string; last_started_at: number | null; duration_ms: number | null; ok: boolean | null }[] }>('/sync/jobs/status').catch(() => ({ items: [] })),
+    api<{ items: { key: string; last_at: number | null; elapsed_ms: number | null; failed: boolean | null }[] }>('/sync/jobs/status').catch(() => ({ items: [] })),
     api<{ machine_id: string }[]>('/machines').catch(() => []),
   ])
   jobRuns.value = Object.fromEntries(status.items.map((item) => [item.key, item]))
