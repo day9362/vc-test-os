@@ -231,10 +231,13 @@ def _options(
     *,
     partial: bool,
 ):
-    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
+
+    from app.service.agent.actions import strip_model_confirmation
 
     WORKSPACE.mkdir(parents=True, exist_ok=True)
     CONFIG.mkdir(parents=True, exist_ok=True)
+    use_mcp = allowed_tools != []
     return ClaudeAgentOptions(
         cwd=str(WORKSPACE),
         model=settings.anthropic_model or None,
@@ -243,7 +246,8 @@ def _options(
         allowed_tools=MCP_TOOLS if allowed_tools is None else allowed_tools,
         disallowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"],
         permission_mode="acceptEdits",
-        mcp_servers={} if allowed_tools == [] else {"vapor-chamber": {"type": "http", "url": settings.mcp_url}},
+        mcp_servers={} if not use_mcp else {"vapor-chamber": {"type": "http", "url": settings.mcp_url}},
+        hooks=None if not use_mcp else {"PreToolUse": [HookMatcher(hooks=[strip_model_confirmation])]},
         strict_mcp_config=True,
         setting_sources=[],
         max_turns=max_turns,

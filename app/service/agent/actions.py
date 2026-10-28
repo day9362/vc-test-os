@@ -29,7 +29,7 @@ def is_gated(name: str, arguments: dict | None) -> bool:
 
 def confirmation_card(name: str, arguments: dict | None, result_text: str) -> dict | None:
     args = arguments if isinstance(arguments, dict) else {}
-    if not is_gated(name, args) or args.get("human_confirmed") is True:
+    if not is_gated(name, args):
         return None
     payload = _object(result_text)
     if payload is None or payload.get("ok") is not False:
@@ -48,6 +48,25 @@ def confirmation_card(name: str, arguments: dict | None, result_text: str) -> di
         "status": "pending",
         "result": "",
         "risk": _risk(tool_name(name), args),
+    }
+
+
+async def strip_model_confirmation(input_data: Any, tool_use_id: str | None = None, context: Any = None) -> dict:
+    """模型自己带上的 human_confirmed 不算数，调用前一律改成 false。"""
+    tool_input = input_data.get("tool_input") if isinstance(input_data, dict) else None
+    if not isinstance(tool_input, dict):
+        return {}
+    name = str(input_data.get("tool_name") or "")
+    if not is_gated(name, tool_input):
+        return {}
+    updated = {key: value for key, value in tool_input.items() if key != "human_confirmed"}
+    updated["human_confirmed"] = False
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": updated,
+        }
     }
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from app.service.agent.prompts import MCP_TOOLS
 from app.service.agent.runtime import model_env, run_turn
 from app.service.agent.scope import with_scope
 from app.service.agent.sessions import AgentSessionService, session_title
-from app.service.agent.actions import confirmation_card
+from app.service.agent.actions import confirmation_card, strip_model_confirmation
 from app.service.agent.cards import extract_choices, present_cards
 from app.service.agent.transcript import TurnBuilder, turn_from_messages
 
@@ -108,11 +109,19 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(action["risk"], "low")
         self.assertNotIn("human_confirmed", action["arguments"])
 
-    def test_confirmed_or_read_calls_do_not_wait(self) -> None:
+    def test_model_cannot_mark_a_write_as_already_confirmed(self) -> None:
         refused = '{"ok": false, "summary": "还没有得到用户对这一次操作的同意。", "detail": "请先向用户说明：给 M05 关机。"}'
         self.assertIsNone(confirmation_card("cluster_line", {"action": "overview"}, refused))
-        self.assertIsNone(confirmation_card("cluster_control", {"action": "power", "human_confirmed": True}, refused))
         self.assertIsNone(confirmation_card("cluster_plan", {"action": "dispatch"}, refused))
+        forced = confirmation_card(
+            "cluster_control",
+            {"action": "power", "machine_id": "M05", "power_state": "off", "human_confirmed": True},
+            refused,
+        )
+        self.assertIsNotNone(forced)
+        assert forced is not None
+        self.assertEqual(forced["status"], "pending")
+        self.assertEqual(forced["arguments"], {"action": "power", "machine_id": "M05", "power_state": "off"})
         power = confirmation_card(
             "cluster_control",
             {"action": "power", "machine_id": "M05", "power_state": "off"},
@@ -122,6 +131,20 @@ class TranscriptTests(unittest.TestCase):
         assert power is not None
         self.assertEqual(power["risk"], "high")
         self.assertEqual(power["desc"], "给 M05 关机")
+
+    def test_pre_tool_hook_clears_model_confirmation(self) -> None:
+        cleared = asyncio.run(strip_model_confirmation({
+            "tool_name": "mcp__vapor-chamber__cluster_control",
+            "tool_input": {"action": "create_batch", "model": "tb172", "count": 10, "human_confirmed": True},
+        }))
+        updated = cleared["hookSpecificOutput"]["updatedInput"]
+        self.assertFalse(updated["human_confirmed"])
+        self.assertEqual(updated["count"], 10)
+        untouched = asyncio.run(strip_model_confirmation({
+            "tool_name": "mcp__vapor-chamber__cluster_line",
+            "tool_input": {"action": "overview"},
+        }))
+        self.assertEqual(untouched, {})
 
 
 class CardTests(unittest.TestCase):
