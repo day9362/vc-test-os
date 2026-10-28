@@ -34,6 +34,8 @@ from app.service.reports.figures import batch_key
 from app.service.reports.narrative import grounded_lines, request_summary
 from app.service.reports.pdf import PdfFigure, chart_bars, render_report_pdf
 from app.service.reports.store import reports_dir, save_report_pdf
+from app.service.runs.cluster_ingest import fleet_machine_ids
+from app.service.runs.run_service import RunService
 
 USL_T01 = 2.8
 BINS = 28
