@@ -100,6 +100,7 @@ async function load() {
   try {
     report.value = await api<ReportData>(`/reports/data?batch_ids=${encodeURIComponent(asked.value.join(','))}`)
     await loadFigures().catch(() => { figures.value = [] })
+    await loadSavedSummary().catch(() => { summaryLines.value = [] })
   } catch (err) {
     report.value = null
     error.value = err instanceof Error ? err.message : '报告加载失败'
@@ -145,6 +146,12 @@ function batchLines(batch: ReportBatch, data: ReportData) {
   const profile = hottest(data, batch.batch_id)
   if (profile) lines.push(`温差最大的是 ${profile.item}，均值 ${profile.value.toFixed(3)} ℃。`)
   return lines
+}
+
+async function loadSavedSummary() {
+  const body = await api<{ lines: string[]; model: string }>(`/reports/summary?batch_ids=${encodeURIComponent(asked.value.join(','))}`)
+  summaryLines.value = body.lines || []
+  summaryModel.value = body.model || ''
 }
 
 async function loadSummary() {
@@ -249,7 +256,12 @@ async function exportPdf() {
   try {
     const body = await api<{ url: string }>('/reports/export', {
       method: 'POST',
-      body: JSON.stringify({ batch_ids: asked.value, figure_ids: [], format: 'pdf' }),
+      body: JSON.stringify({
+        batch_ids: asked.value,
+        figure_ids: figures.value.filter((item) => item.status === 'done').map((item) => item.figure_id),
+        summary_lines: summaryLines.value,
+        format: 'pdf',
+      }),
     })
     const link = document.createElement('a')
     link.href = body.url
