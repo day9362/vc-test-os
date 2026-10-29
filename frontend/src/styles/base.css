@@ -52,6 +52,11 @@ a:hover { text-decoration: underline; }
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+  /* 加载符号表示还在进行，停住会被看成卡住。 */
+  .spin {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
+  }
 }
 
 /* ---------- 排版工具 ---------- */
