@@ -1,3 +1,4 @@
+from app.models.orm.agent_session import AgentMessageOrm, AgentSessionOrm
 from app.models.orm.alarm import AiCallOrm, AlarmOrm, AttributionOrm, AuditOrm
 from app.models.orm.base import Base
 from app.models.orm.compensation import CompHistoryOrm
@@ -11,6 +12,8 @@ from app.models.orm.test_plan import TestPlanOrm
 from app.models.orm.user import TenantOrm, UserOrm
 
 __all__ = [
+    "AgentMessageOrm",
+    "AgentSessionOrm",
     "AiCallOrm",
     "Agg5mOrm",
     "AlarmOrm",
