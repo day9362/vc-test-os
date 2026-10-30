@@ -61,11 +61,12 @@ async def _catalog_job() -> None:
 def start_scheduler() -> None:
     if scheduler.running:
         return
-    scheduler.add_job(_sync_job, "interval", seconds=2, id="sync_cluster", replace_existing=True)
-    scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", replace_existing=True)
-    scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", replace_existing=True)
-    scheduler.add_job(_watch_job, "interval", seconds=1, id="realtime_watch", replace_existing=True)
-    scheduler.add_job(_catalog_job, "interval", seconds=30, id="sync_catalog", replace_existing=True)
+    common = {"replace_existing": True, "max_instances": 1, "coalesce": True, "misfire_grace_time": 30}
+    scheduler.add_job(_sync_job, "interval", seconds=2, id="sync_cluster", **common)
+    scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", **common)
+    scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", **common)
+    scheduler.add_job(_watch_job, "interval", seconds=1, id="realtime_watch", **common)
+    scheduler.add_job(_catalog_job, "interval", seconds=30, id="sync_catalog", **common)
     scheduler.start()
 
 
@@ -88,7 +89,16 @@ def _replace(job_id: str, func, seconds: int, enabled: bool) -> None:
         except JobLookupError:
             pass
         return
-    scheduler.add_job(func, "interval", seconds=max(int(seconds), 1), id=job_id, replace_existing=True)
+    scheduler.add_job(
+        func,
+        "interval",
+        seconds=max(int(seconds), 1),
+        id=job_id,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=30,
+    )
 
 
 def stop_scheduler() -> None:

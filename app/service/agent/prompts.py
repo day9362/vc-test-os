@@ -20,7 +20,7 @@ cluster_guide 不查实时数据，也不改设备。用户已经写明机台、
 - cluster_plan：list 浏览方案，get 看某一版，loaded 看某台机器现在装的版本，create 只校验并保存，dispatch 在用户于对话里确认方案编号、版本和目标机器之后下发。dispatch 一调用就会下发，没有单独的确认开关，所以不要先用 false 试调用。保存成功不等于已经下发。同名再保存会生成新版本。
 - cluster_product：list_models 核对型号，list_batches 取得批次编号，list 按型号、批次、状态或是否标准样品筛选，get 按序列号看一片，defect_kinds 只看缺陷目录，requeue 把已测完的标准样品放回待测。requeue 先用 human_confirmed=false 调用。不要自己把 human_confirmed 设为 true。档案没有等级、单板缺陷和真实热阻。不要把 include_defects 设为 true。
 - cluster_record：list 按机器、批次、合格与否或序列号查记录，get 看一条记录的状态、合格结论和失败项，samples 看温度、压紧力和功率曲线并用 since 续读，export 导出已完成且保留结果的记录，必须给出 limits_plan_id。不能按墙钟时间筛选。合格与否是测试机按方案作的判定。摘要里的合格条数只统计已经判定为合格的；尚未判定或状态为进行中的记录不是不合格，不能写成良率 0%。开测后用这里看进度，不要在开测时等待测完。
-- cluster_control：load 装板，test 对已装板槽位开测并立刻返回记录编号，abort 中止该槽位，power 给单台上电或关机，production 开始或停止连续生产，speed 修改列出的机器的仿真倍率，create_batch 生成一批待测板。这些动作先用 human_confirmed=false 调用一次，参数要填完整。不要自己把 human_confirmed 设为 true，也不要因为用户在对话里说了同意就再调用。页面会列出待确认操作，用户点批准后才会执行。production 开始时要有机器、方案版本，batch_id 和 serial_numbers 只能留一个。关机前说明这台正在进行的测试会被标成中止。speed 必须写明机器编号，不会改全部机器。create_batch 先写明型号、良率和数量，序列号由平台分配。
+- cluster_control：load 装板，test 对已装板槽位开测并立刻返回记录编号，abort 中止该槽位，power 给单台上电或关机，production 开始或停止连续生产，speed 修改列出的机器的仿真倍率，create_batch 生成一批待测板，reset 清故障复位，init 拆掉现有测试机再重建。这些动作先用 human_confirmed=false 调用一次，参数要填完整。不要自己把 human_confirmed 设为 true，也不要因为用户在对话里说了同意就再调用。页面会列出待确认操作，用户点批准后才会执行。production 开始时要有机器、方案版本，batch_id 和 serial_numbers 只能留一个。关机前说明这台正在进行的测试会被标成中止。speed 必须写明机器编号，不会改全部机器。create_batch 先写明型号、良率和数量，序列号由平台分配。用户说所有机台复位或初始化时，优先用 reset，machine_ids 可留空；只有用户明确要求拆掉重建机群时才用 init。
 - cluster_compensation：suggest 提交建议，不改读数。apply 先用 human_confirmed=false 调用，带上建议编号和补偿量。不要自己把 human_confirmed 设为 true。写入只影响之后的新测试。
 - cluster_truth：仅当用户要核对某次分析是否打中物理答案时，按 run_id 读取等级、缺陷、稳态热阻和通道误差。不要用它回答合格与否，合格与否用 cluster_record。
 
@@ -38,7 +38,7 @@ label 不超过 12 个字。text 是发给你的那一句，不要用它代替�
 
 _FOCUS = {
     "agent.plan": "当前任务是把自然语言整理成测试方案。用户已经写出型号和参数时，不要先 list_models，直接用 cluster_plan 的 list 或 get 看已有方案，字段齐全后 create 保存。只有用户确认编号、版本和目标机器后才 dispatch。2.5 W 常用压紧 100 g，3.5 W 常用压紧 120 g。时长 1–600 秒，功率 0.1–10 W，压紧力 20–300 g。判定项温差写成 Temp_T0-T1，不是 T0-T1。",
-    "agent.ops": "当前任务是操作测试机。用户已经点名机器和动作时，直接调用对应工具，不要先 cluster_guide，也不要先巡视整线，不要先查型号或批次目录。需要看现状时再用 cluster_line。装板、开测、中止、上下电、连续生产、改倍率和建批次都走 cluster_control，补偿走 cluster_compensation。这些写操作用 human_confirmed=false 调用一次，由用户在右侧批准。不要自己设为 true。",
+    "agent.ops": "当前任务是操作测试机。用户已经点名机器和动作时，直接调用对应工具，不要先 cluster_guide，也不要先巡视整线，不要先查型号或批次目录。需要看现状时再用 cluster_line。装板、开测、中止、上下电、连续生产、改倍率、建批次、复位和重建机群都走 cluster_control，补偿走 cluster_compensation。这些写操作用 human_confirmed=false 调用一次，由用户在右侧批准。不要自己设为 true。用户说所有机台复位初始化时，调用 cluster_control 的 reset，不要去查测试记录，也不要调用不存在的 fleet 或 result。",
     "agent.analysis": "当前任务是根据测试记录分析差异。不要先 cluster_guide。合格与否只看 cluster_record。用户已经写出型号时不要 list_models。不要用批次目录的缺陷比例回答良率。分析范围或问题里已经有批次编号时不要 list_batches；编号还不知道时才 list_batches 一次，批次列表没有时间，按返回顺序取该型号的最后 3 个。然后只对这 3 个批次各调用一次 cluster_record 的 list，并传 full=true。不要为了良率去看 cluster_line，也不要调用 cluster_product 的 list 或 get。拿到合格数、不合格数和失败项后立刻写出差异原因。只有用户明确要求时才装板、开测、改生产、改倍率或写入补偿。只有用户要核对物理答案时才用 cluster_truth。",
 }
 

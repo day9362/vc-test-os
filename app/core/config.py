@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 720
     cluster_base_url: str = "https://cluster.simuoss.cn/api"
     cluster_token: str = ""
-    cluster_timeout_s: float = 5
+    cluster_timeout_s: float = 20
     degraded_alarm: bool = True
     drift_c: float = 0.15
     sentinel_as_data_anomaly: bool = True

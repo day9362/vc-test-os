@@ -101,6 +101,8 @@ def _risk(name: str, arguments: dict) -> str:
         return "high"
     if name == "cluster_control" and action == "production" and arguments.get("production_command") == "stop":
         return "high"
+    if name == "cluster_control" and action in {"reset", "init"}:
+        return "high"
     if name in {"cluster_compensation", "cluster_product"}:
         return "high"
     return "low"
