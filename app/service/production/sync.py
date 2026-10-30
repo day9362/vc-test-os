@@ -95,22 +95,26 @@ def apply_run_stats(row: BatchRecordOrm, runs: list[RunOrm], production: Product
         row.ended_at = None
         row.plan_id = production.plan_id or row.plan_id
         row.plan_version = production.plan_version or row.plan_version
-        count = len(row.machine_ids or machines) or 1
-        row.eta_s = _eta(row.remaining, finished, count)
-        return
-    if active and row.tested:
-        row.state = "done"
-        row.ended_at = max(times) if times else row.ended_at
-        row.eta_s = None
-        production.active = False
+        workers = len(row.machine_ids or machines) or 1
+        row.eta_s = _eta(row.remaining, finished, workers)
         return
     if row.state == "stopped":
         row.eta_s = None
         return
-    if row.tested:
+    # 队列已排空但仍标着 active，或连续生产已停而批次仍是 running：收成 done。
+    if active or row.state == "running" or tested:
+        if active and production is not None:
+            production.active = False
+            production.queue_remaining = 0
         row.state = "done"
-        row.ended_at = max(times) if times else row.ended_at
+        row.ended_at = max(times) if times else (row.ended_at or now_ms())
         row.eta_s = None
+        if not still_open or not row.remaining_locked:
+            row.remaining = max(count - tested, 0) if count else 0
+        elif not active:
+            # 集群已无连续生产时，locked remaining 可能过期，不再挡住结束。
+            row.remaining = max(count - tested, 0) if count else 0
+            row.remaining_locked = False
 
 
 class CatalogSync:
@@ -123,6 +127,8 @@ class CatalogSync:
         await self._production()
 
     async def refresh_stats(self) -> tuple[dict | None, list[dict]]:
+        # 每次刷批次状态都先对齐集群连续生产，避免只靠 30s catalog 时本地 active 挂死。
+        await self._production()
         grouped = await self.repo.runs_grouped()
         production = await self.repo.production_row()
         if production.active and await fleet_queue_remaining() == 0:
@@ -209,22 +215,24 @@ class CatalogSync:
 
     async def _production(self) -> None:
         payload = None
-        reached = False
+        answered = False
         for path in ("/fleet/production", "/production"):
             try:
                 payload = await get_cluster(path)
+                answered = True
             except AppError as exc:
                 log.info("sync production %s skipped: %s", path, exc.message)
-                return
-            if payload is None:
                 continue
-            reached = True
+            if payload is None:
+                # 404/空：再试下一个路径；都空则视为集群没有进行中的连续生产。
+                continue
             break
-        if not reached:
+        if not answered:
             return
         row = await self.repo.production_row()
         if not isinstance(payload, dict) or not payload.get("batch_id"):
             row.active = False
+            row.queue_remaining = 0
             return
         row.active = True
         row.batch_id = str(payload.get("batch_id") or "")
