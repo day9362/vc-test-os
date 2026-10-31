@@ -62,7 +62,8 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
     common = {"replace_existing": True, "max_instances": 1, "coalesce": True, "misfire_grace_time": 30}
-    scheduler.add_job(_sync_job, "interval", seconds=2, id="sync_cluster", **common)
+    # 2 秒一轮在集群超时时会永久占住 max_instances=1，前端机台状态就不刷新。
+    scheduler.add_job(_sync_job, "interval", seconds=10, id="sync_cluster", **common)
     scheduler.add_job(_alarm_job, "interval", seconds=5, id="scan_alarms", **common)
     scheduler.add_job(_agg_job, "interval", seconds=60, id="rollup_agg", **common)
     scheduler.add_job(_watch_job, "interval", seconds=1, id="realtime_watch", **common)
@@ -76,7 +77,7 @@ def apply_job_intervals(payload: dict) -> None:
     jobs = {item.get("key"): item for item in payload.get("jobs") or []}
     fleet = jobs.get("fleet") or {}
     agg = jobs.get("agg") or {}
-    _replace("sync_cluster", _sync_job, int(fleet.get("interval_s") or 2), bool(fleet.get("enabled", True)))
+    _replace("sync_cluster", _sync_job, int(fleet.get("interval_s") or 10), bool(fleet.get("enabled", True)))
     _replace("rollup_agg", _agg_job, int(agg.get("interval_s") or 60), bool(agg.get("enabled", True)))
 
 
