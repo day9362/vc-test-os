@@ -26,37 +26,50 @@ async def sync_cluster(session: AsyncSession) -> None:
         await _touch(session)
         return
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    # 集群慢时避免一轮同步拖太久，占死调度导致前端实时数据不刷新。
+    fleet_timeout = min(float(settings.cluster_timeout_s), 8.0)
+    slot_timeout = min(float(settings.cluster_timeout_s), 4.0)
+    deadline = now_ms() + 12_000
     try:
-        async with httpx.AsyncClient(timeout=settings.cluster_timeout_s) as client:
+        async with httpx.AsyncClient(timeout=fleet_timeout, trust_env=False) as client:
             fleet = await client.get(f"{base}/fleet", headers=headers)
             fleet.raise_for_status()
             payload = fleet.json()
+            machines = payload if isinstance(payload, list) else payload.get("machines") or payload.get("items") or []
+            changed = []
+            for item in machines:
+                if not isinstance(item, dict) or "machine_id" not in item:
+                    continue
+                row = await _upsert_machine(session, item)
+                changed.append(row.machine_id)
+                if row.comm_status == "DISCONNECTED":
+                    continue
+                if now_ms() >= deadline:
+                    log.warning("cluster sync budget exhausted after %s", row.machine_id)
+                    break
+                try:
+                    slots = await client.get(
+                        f"{base}/machines/{row.machine_id}/slots",
+                        headers=headers,
+                        timeout=slot_timeout,
+                    )
+                    slots.raise_for_status()
+                    body = slots.json()
+                except Exception as exc:
+                    log.warning("slot sync skipped for %s: %s", row.machine_id, exc)
+                    continue
+                slot_rows = body if isinstance(body, list) else body.get("slots") or body.get("items") or []
+                await _replace_slots(session, row.machine_id, slot_rows)
+                await hub.publish(
+                    "slots",
+                    {"machine_id": row.machine_id, "slots": [_slot_dict(slot) for slot in slot_rows if isinstance(slot, dict)]},
+                )
+            if changed:
+                summaries = await _summaries(session, changed)
+                await hub.publish("fleet", summaries)
     except Exception as exc:
         log.warning("cluster fleet sync failed: %s", exc)
         return
-    machines = payload if isinstance(payload, list) else payload.get("machines") or payload.get("items") or []
-    changed = []
-    for item in machines:
-        if not isinstance(item, dict) or "machine_id" not in item:
-            continue
-        row = await _upsert_machine(session, item)
-        changed.append(row.machine_id)
-        if row.comm_status == "DISCONNECTED":
-            continue
-        try:
-            async with httpx.AsyncClient(timeout=settings.cluster_timeout_s) as client:
-                slots = await client.get(f"{base}/machines/{row.machine_id}/slots", headers=headers)
-                slots.raise_for_status()
-                body = slots.json()
-        except Exception as exc:
-            log.warning("slot sync skipped for %s: %s", row.machine_id, exc)
-            continue
-        slot_rows = body if isinstance(body, list) else body.get("slots") or body.get("items") or []
-        await _replace_slots(session, row.machine_id, slot_rows)
-        await hub.publish("slots", {"machine_id": row.machine_id, "slots": [_slot_dict(slot) for slot in slot_rows if isinstance(slot, dict)]})
-    if changed:
-        summaries = await _summaries(session, changed)
-        await hub.publish("fleet", summaries)
 
 
 async def rollup_agg(session: AsyncSession) -> None:
