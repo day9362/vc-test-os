@@ -86,7 +86,7 @@ class AgentSessionService:
         await self._record_usage(row.module, actor, turn, started_ms, session_id, ok)
         await self.session.commit()
 
-    async def decide(self, user_id: str, session_id: str, action_id: str, decision: str) -> dict:
+    async def decide(self, user_id: str, session_id: str, action_id: str, decision: str, *, user_token: str) -> dict:
         from app.service.agent.actions import call_confirmed
 
         if action_id in _IN_FLIGHT:
@@ -104,7 +104,7 @@ class AgentSessionService:
             return action
         _IN_FLIGHT.add(action_id)
         try:
-            outcome = await call_confirmed(str(action.get("name") or ""), action.get("arguments") or {})
+            outcome = await call_confirmed(str(action.get("name") or ""), action.get("arguments") or {}, user_token)
         except AppError:
             raise
         finally:
@@ -136,13 +136,13 @@ class AgentSessionService:
         await self.session.commit()
         return choice
 
-    async def send(self, user_id: str, session_id: str, text: str, *, actor: str, model: str = "", batches: list[str] | None = None) -> AgentMessageOrm:
+    async def send(self, user_id: str, session_id: str, text: str, *, actor: str, model: str = "", batches: list[str] | None = None, user_token: str | None = None) -> AgentMessageOrm:
         from app.service.agent.runtime import run_turn
         from app.service.agent.scope import with_scope
 
         started = now_ms()
         module, sdk_session_id = await self.prepare(user_id, session_id, text)
-        turn = await run_turn(module, with_scope(text, model, batches or []), sdk_session_id)
+        turn = await run_turn(module, with_scope(text, model, batches or []), sdk_session_id, user_token=user_token)
         return await self.save_reply(user_id, session_id, turn, actor=actor, started_ms=started)
 
     async def _record_usage(self, module: str, actor: str, turn: dict | None, started_ms: int, session_id: str, ok: bool) -> None:

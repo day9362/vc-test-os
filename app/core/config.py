@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     sentinel_as_data_anomaly: bool = True
     reports_dir: str = "data/reports"
     mcp_url: str = "http://127.0.0.1:8100/mcp/"
+    mcp_approval_secret: str = ""
     anthropic_base_url: str = ""
     anthropic_api_key: str = ""
     anthropic_model: str = "deepseek-flash"

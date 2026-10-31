@@ -23,6 +23,7 @@ from app.api.machines.power_on import router as power_on_router
 from app.api.machines.power_off import router as power_off_router
 from app.api.machines.maintenance import router as maintenance_router
 from app.api.machines.reset import router as reset_router
+from app.api.machines.slots import router as slots_router
 from app.api.machines.plan_history import router as plan_history_router
 from app.api.test_plan.list_plans import router as list_plans_router
 from app.api.test_plan.validate_plan import router as validate_plan_router
@@ -55,6 +56,7 @@ from app.api.search.get import router as search_router
 from app.api.audit.list import router as audit_router
 from app.api.production.models import router as models_router
 from app.api.production.batches import router as batches_router
+from app.api.production.create_batch import router as create_batch_router
 from app.api.production.batch_stats import router as batch_stats_router
 from app.api.production.batch_stat import router as batch_stat_router
 from app.api.production.get import router as production_router
@@ -96,6 +98,7 @@ api_router.include_router(power_on_router)
 api_router.include_router(power_off_router)
 api_router.include_router(maintenance_router)
 api_router.include_router(reset_router)
+api_router.include_router(slots_router)
 api_router.include_router(plan_history_router)
 api_router.include_router(list_plans_router)
 api_router.include_router(validate_plan_router)
@@ -128,6 +131,7 @@ api_router.include_router(search_router)
 api_router.include_router(audit_router)
 api_router.include_router(models_router)
 api_router.include_router(batches_router)
+api_router.include_router(create_batch_router)
 api_router.include_router(batch_stats_router)
 api_router.include_router(batch_stat_router)
 api_router.include_router(production_router)

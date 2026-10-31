@@ -73,6 +73,19 @@ class MaintenanceIn(BaseModel):
     on: bool
 
 
+class SlotLoadIn(BaseModel):
+    serial_number: str
+
+
+class SlotActionOut(BaseModel):
+    audit_id: str
+    machine_id: str
+    slot_index: int
+    phase: str
+    serial_number: str | None = None
+    run_id: str | None = None
+
+
 class PlanUseOut(BaseModel):
     plan_id: str
     name: str
