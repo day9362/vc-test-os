@@ -21,8 +21,8 @@ _DEFAULTS = {
 }
 
 
-async def generate_draft(text: str) -> tuple[PlanBody, list[str], UsageOut]:
-    turn = await run_turn("agent.plan", text, None, system=DRAFT_PROMPT, allowed_tools=[], max_turns=4)
+async def generate_draft(text: str, model: str | None = None) -> tuple[PlanBody, list[str], UsageOut]:
+    turn = await run_turn("agent.plan", text, None, system=DRAFT_PROMPT, allowed_tools=[], max_turns=4, model=model)
     body, notes = plan_from_reply(turn.get("text") or "")
     tokens = turn.get("tokens") or [0, 0]
     return body, notes, UsageOut(input=int(tokens[0]), output=int(tokens[1]))

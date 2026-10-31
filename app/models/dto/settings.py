@@ -35,6 +35,7 @@ class StorageSettingsOut(BaseModel):
 class AiSettingsOut(BaseModel):
     base_url: str
     api_key: str
+    model: str = "deepseek-flash"
     monthly_budget_m: float
     alert_pct: int
     models: dict[str, str]

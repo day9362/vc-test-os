@@ -28,6 +28,7 @@ from app.repo.audit_repo import AuditRepo
 from app.repo.settings_repo import SettingsRepo
 from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
+from app.service.settings.model import apply_shared_model
 from app.service.settings.sim import FAULT_CATALOG, SCENARIOS
 from app.tasks.job_runs import snapshot
 from app.tasks.scheduler import apply_job_intervals
@@ -52,6 +53,11 @@ class SettingsService:
         self._validate(incoming)
         row = await self.settings.get_or_create()
         payload = merge_secrets(incoming, row.payload or {})
+        stored_ai = (row.payload or {}).get("ai") or {}
+        ai = dict(payload.get("ai") or {})
+        ai["base_url"] = stored_ai.get("base_url") or ""
+        ai["api_key"] = stored_ai.get("api_key") or ""
+        payload["ai"] = apply_shared_model(ai)
         row = await self.settings.save(payload)
         await self.settings.session.commit()
         apply_job_intervals(row.payload or {})
