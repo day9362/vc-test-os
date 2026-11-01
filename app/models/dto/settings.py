@@ -105,6 +105,7 @@ class FaultCatalogOut(BaseModel):
 
 class ClockIn(BaseModel):
     speed: float
+    machine_ids: list[str] | None = None
 
 
 class ScenarioApplyIn(BaseModel):

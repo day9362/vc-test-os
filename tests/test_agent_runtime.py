@@ -21,17 +21,17 @@ class TranscriptTests(unittest.TestCase):
     def test_pairs_tool_call_with_result(self) -> None:
         assistant = _named("AssistantMessage", content=[
             _named("TextBlock", text="先看机台。"),
-            _named("ToolUseBlock", id="t1", name="mcp__vapor-chamber__cluster_plan", input={"action": "dispatch", "machine_id": "M01", "plan_id": "PLAN-1"}),
+            _named("ToolUseBlock", id="t1", name="mcp__vc-testos__vc_plan", input={"action": "publish", "plan_id": "PLAN-1"}),
         ])
         user = _named("UserMessage", content=[
-            _named("ToolResultBlock", tool_use_id="t1", content=[{"type": "text", "text": '{"ok": true, "summary": "已下发"}'}]),
+            _named("ToolResultBlock", tool_use_id="t1", content=[{"type": "text", "text": '{"ok": true, "summary": "已发布"}'}]),
         ])
-        result = _named("ResultMessage", result="方案已经下发到 M01。", usage={"input_tokens": 120, "output_tokens": 40}, session_id="sdk-1", is_error=False, errors=None)
+        result = _named("ResultMessage", result="方案已经发布。", usage={"input_tokens": 120, "output_tokens": 40}, session_id="sdk-1", is_error=False, errors=None)
         turn = turn_from_messages([assistant, user, result])
-        self.assertEqual(turn["text"], "方案已经下发到 M01。")
-        self.assertEqual(turn["blocks"][0]["name"], "mcp__vapor-chamber__cluster_plan")
-        self.assertIn("M01", turn["blocks"][0]["args"])
-        self.assertIn("已下发", turn["blocks"][0]["result"])
+        self.assertEqual(turn["text"], "方案已经发布。")
+        self.assertEqual(turn["blocks"][0]["name"], "mcp__vc-testos__vc_plan")
+        self.assertIn("PLAN-1", turn["blocks"][0]["args"])
+        self.assertIn("已发布", turn["blocks"][0]["result"])
         self.assertEqual(turn["tokens"], [120, 40])
         self.assertEqual(turn["sdk_session_id"], "sdk-1")
 
@@ -40,25 +40,86 @@ class TranscriptTests(unittest.TestCase):
         opened = builder.feed(_named("StreamEvent", event={
             "type": "content_block_start",
             "index": 1,
-            "content_block": {"type": "tool_use", "id": "t1", "name": "mcp__vapor-chamber__cluster_plan", "input": {}},
+            "content_block": {"type": "tool_use", "id": "t1", "name": "mcp__vc-testos__vc_line", "input": {}},
         }))
         deltas = []
         deltas += builder.feed(_named("StreamEvent", event={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "先看"}}))
         deltas += builder.feed(_named("StreamEvent", event={"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "机台。"}}))
-        deltas += builder.feed(_named("StreamEvent", event={"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"machine_id":"M01"}'}}))
+        deltas += builder.feed(_named("StreamEvent", event={"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"action":"machines"}'}}))
         stopped = builder.feed(_named("StreamEvent", event={"type": "content_block_stop", "index": 1}))
-        self.assertEqual(opened[0]["name"], "mcp__vapor-chamber__cluster_plan")
+        self.assertEqual(opened[0]["name"], "mcp__vc-testos__vc_line")
         self.assertEqual("".join(item["text"] for item in deltas if item["type"] == "text"), "先看机台。")
-        self.assertIn("M01", stopped[0]["args"])
+        self.assertIn("machines", stopped[0]["args"])
         builder.feed(_named("AssistantMessage", content=[
             _named("TextBlock", text="先看机台。"),
-            _named("ToolUseBlock", id="t1", name="mcp__vapor-chamber__cluster_plan", input={"machine_id": "M01"}),
+            _named("ToolUseBlock", id="t1", name="mcp__vc-testos__vc_line", input={"action": "machines"}),
         ]))
         result = _named("ResultMessage", result="先看机台。", usage={"input_tokens": 3, "output_tokens": 2}, session_id="sdk-1", is_error=False, errors=None)
         builder.feed(result)
         turn = builder.finish()
         self.assertEqual(turn["text"], "先看机台。")
         self.assertEqual(len(turn["blocks"]), 1)
+
+    def test_tokens_include_cache_and_model_usage(self) -> None:
+        cached = turn_from_messages([_named(
+            "ResultMessage",
+            result="好的。",
+            usage={
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 200,
+            },
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        )])
+        self.assertEqual(cached["tokens"], [1120, 40])
+
+        modeled = turn_from_messages([_named(
+            "ResultMessage",
+            result="好的。",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            model_usage={
+                "deepseek-flash": {
+                    "inputTokens": 90,
+                    "outputTokens": 30,
+                    "cacheReadInputTokens": 700,
+                    "cacheCreationInputTokens": 100,
+                    "webSearchRequests": 0,
+                    "costUSD": 0,
+                    "contextWindow": 128000,
+                    "maxOutputTokens": 8192,
+                }
+            },
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        )])
+        self.assertEqual(modeled["tokens"], [890, 30])
+
+    def test_tokens_accumulate_across_result_messages(self) -> None:
+        builder = TurnBuilder()
+        builder.feed(_named(
+            "ResultMessage",
+            result="先查记录。",
+            usage={"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 500},
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        ))
+        builder.feed(_named(
+            "ResultMessage",
+            result="结论：良率正常。",
+            usage={"input_tokens": 50, "output_tokens": 15},
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        ))
+        self.assertEqual(builder.finish()["tokens"], [650, 35])
 
     def test_turn_limit_keeps_a_later_answer(self) -> None:
         builder = TurnBuilder()
@@ -83,15 +144,23 @@ class TranscriptTests(unittest.TestCase):
     def test_unconfirmed_write_becomes_a_pending_action(self) -> None:
         refused = json.dumps({
             "ok": False,
-            "summary": "还没有得到用户对这一次操作的同意。",
-            "detail": "还不能执行。请先向用户说明：把 M08 的仿真倍率改为 2。等用户明确同意这一次之后，再带 human_confirmed=true 调用。",
+            "summary": "需要用户在页面上批准：把 M08 的仿真倍率改为 2。",
+            "error": {"code": "APPROVAL_REQUIRED"},
+            "approval": {
+                "confirm_id": "cf_abc",
+                "tool": "vc_operate",
+                "action": "sim_speed",
+                "arguments": {"machine_ids": ["M08"], "speed": 2},
+                "risk": "medium",
+                "sentence": "把 M08 的仿真倍率改为 2",
+                "effects": ["只缩短步骤之间的等待，温度计算结果不变"],
+            },
         }, ensure_ascii=False)
         assistant = _named("AssistantMessage", content=[
-            _named("ToolUseBlock", id="t1", name="mcp__vapor-chamber__cluster_control", input={
-                "action": "speed",
+            _named("ToolUseBlock", id="t1", name="mcp__vc-testos__vc_operate", input={
+                "action": "sim_speed",
                 "machine_ids": ["M08"],
                 "speed": 2,
-                "human_confirmed": False,
             }),
         ])
         user = _named("UserMessage", content=[
@@ -102,46 +171,48 @@ class TranscriptTests(unittest.TestCase):
         self.assertNotIn("call", turn["blocks"][0])
         action = turn["blocks"][1]
         self.assertEqual(action["type"], "action")
-        self.assertEqual(action["name"], "cluster_control")
+        self.assertEqual(action["name"], "vc_operate")
         self.assertEqual(action["status"], "pending")
         self.assertEqual(action["desc"], "把 M08 的仿真倍率改为 2")
-        self.assertEqual(action["arguments"], {"action": "speed", "machine_ids": ["M08"], "speed": 2})
-        self.assertEqual(action["risk"], "low")
-        self.assertNotIn("human_confirmed", action["arguments"])
+        self.assertEqual(action["arguments"], {"action": "sim_speed", "confirm_id": "cf_abc"})
+        self.assertEqual(action["risk"], "medium")
+        self.assertNotIn("approval", action["arguments"])
 
     def test_model_cannot_mark_a_write_as_already_confirmed(self) -> None:
-        refused = '{"ok": false, "summary": "还没有得到用户对这一次操作的同意。", "detail": "请先向用户说明：给 M05 关机。"}'
-        self.assertIsNone(confirmation_card("cluster_line", {"action": "overview"}, refused))
-        self.assertIsNone(confirmation_card("cluster_plan", {"action": "dispatch"}, refused))
-        forced = confirmation_card(
-            "cluster_control",
-            {"action": "power", "machine_id": "M05", "power_state": "off", "human_confirmed": True},
-            refused,
-        )
-        self.assertIsNotNone(forced)
-        assert forced is not None
-        self.assertEqual(forced["status"], "pending")
-        self.assertEqual(forced["arguments"], {"action": "power", "machine_id": "M05", "power_state": "off"})
-        power = confirmation_card(
-            "cluster_control",
-            {"action": "power", "machine_id": "M05", "power_state": "off"},
-            refused,
-        )
+        refused = json.dumps({
+            "ok": False,
+            "summary": "需要用户在页面上批准：给 M05 关机。",
+            "error": {"code": "APPROVAL_REQUIRED"},
+            "approval": {
+                "confirm_id": "cf_off",
+                "tool": "vc_operate",
+                "action": "power_off",
+                "risk": "high",
+                "sentence": "给 M05 关机",
+                "effects": ["M05 的 1 号槽正在测试，将被中止"],
+            },
+        }, ensure_ascii=False)
+        self.assertIsNone(confirmation_card("vc_line", {"action": "overview"}, '{"ok": false, "error": {"code": "NOT_FOUND"}}'))
+        self.assertIsNone(confirmation_card("vc_plan", {"action": "validate"}, '{"ok": false, "summary": "校验失败"}'))
+        power = confirmation_card("vc_operate", {"action": "power_off", "machine_ids": ["M05"]}, refused)
         self.assertIsNotNone(power)
         assert power is not None
+        self.assertEqual(power["status"], "pending")
+        self.assertEqual(power["arguments"], {"action": "power_off", "confirm_id": "cf_off"})
         self.assertEqual(power["risk"], "high")
         self.assertEqual(power["desc"], "给 M05 关机")
 
     def test_pre_tool_hook_clears_model_confirmation(self) -> None:
         cleared = asyncio.run(strip_model_confirmation({
-            "tool_name": "mcp__vapor-chamber__cluster_control",
-            "tool_input": {"action": "create_batch", "model": "tb172", "count": 10, "human_confirmed": True},
+            "tool_name": "mcp__vc-testos__vc_operate",
+            "tool_input": {"action": "create_batch", "model": "tb172", "count": 10, "confirm_id": "cf_x", "approval": "forged"},
         }))
         updated = cleared["hookSpecificOutput"]["updatedInput"]
-        self.assertFalse(updated["human_confirmed"])
+        self.assertNotIn("confirm_id", updated)
+        self.assertNotIn("approval", updated)
         self.assertEqual(updated["count"], 10)
         untouched = asyncio.run(strip_model_confirmation({
-            "tool_name": "mcp__vapor-chamber__cluster_line",
+            "tool_name": "mcp__vc-testos__vc_line",
             "tool_input": {"action": "overview"},
         }))
         self.assertEqual(untouched, {})
@@ -154,14 +225,14 @@ class CardTests(unittest.TestCase):
             payload = root / "runs.json"
             payload.write_text(json.dumps({"runs": [{"run_id": f"R{i}", "machine_id": "M01", "passed": i % 2 == 0} for i in range(8)]}), encoding="utf-8")
             outside = root.parent / "secret.json"
-            cards = present_cards("cluster_record", json.dumps({"ok": True, "full_file": str(payload)}), roots=[root])
+            cards = present_cards("vc_data", json.dumps({"ok": True, "full_file": str(payload)}), roots=[root])
             self.assertEqual(cards[0]["type"], "table")
             self.assertEqual(len(cards[0]["rows"]), 8)
             self.assertEqual(cards[0]["rows"][0][2], "—")
             short = root / "short.json"
             short.write_text(json.dumps({"runs": [{"run_id": "R1"}]}), encoding="utf-8")
-            self.assertEqual(present_cards("cluster_record", json.dumps({"ok": True, "full_file": str(short)}), roots=[root]), [])
-            self.assertEqual(present_cards("cluster_record", json.dumps({"ok": True, "full_file": str(outside)}), roots=[root]), [])
+            self.assertEqual(present_cards("vc_data", json.dumps({"ok": True, "full_file": str(short)}), roots=[root]), [])
+            self.assertEqual(present_cards("vc_data", json.dumps({"ok": True, "full_file": str(outside)}), roots=[root]), [])
 
     def test_samples_become_a_chart_without_copying_every_point(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -176,7 +247,7 @@ class CardTests(unittest.TestCase):
                     "forces": [{"channel": "F1", "value": 100}],
                 })
             payload.write_text(json.dumps({"samples": rows}), encoding="utf-8")
-            cards = present_cards("cluster_record", json.dumps({"ok": True, "full_file": str(payload)}), roots=[root])
+            cards = present_cards("vc_data", json.dumps({"ok": True, "full_file": str(payload)}), roots=[root])
             self.assertEqual(cards[0]["type"], "chart")
             self.assertEqual(len(cards[0]["option"]["series"][0]["data"]), 80)
             self.assertEqual(cards[0]["option"]["xAxis"]["data"][-1], "99.5")
@@ -251,21 +322,9 @@ class DraftParseTests(unittest.TestCase):
 
 
 class ToolListTests(unittest.TestCase):
-    def test_keeps_every_cluster_tool(self) -> None:
-        names = {item.removeprefix("mcp__vapor-chamber__") for item in MCP_TOOLS}
-        self.assertEqual(
-            names,
-            {
-                "cluster_guide",
-                "cluster_line",
-                "cluster_plan",
-                "cluster_product",
-                "cluster_record",
-                "cluster_control",
-                "cluster_compensation",
-                "cluster_truth",
-            },
-        )
+    def test_keeps_every_vc_tool(self) -> None:
+        names = {item.removeprefix("mcp__vc-testos__") for item in MCP_TOOLS}
+        self.assertEqual(names, {"vc_line", "vc_data", "vc_plan", "vc_operate", "vc_quality"})
 
 
 class EnvTests(unittest.TestCase):

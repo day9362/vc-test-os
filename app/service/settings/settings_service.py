@@ -124,13 +124,17 @@ class SettingsService:
         if body.speed <= 0:
             raise AppError(422, "VALIDATION_ERROR", "设置校验失败", {"issues": [{"field": "speed", "message": "speed 必须大于 0"}]})
         payload = await self._require_sim()
-        upstream = await self._proxy("PUT", "/fleet/clock", payload, {"speed": body.speed})
-        sim = dict(payload.get("sim") or {})
-        sim["speed"] = body.speed
-        payload = dict(payload)
-        payload["sim"] = sim
-        await self.settings.save(payload)
-        audit_id = self.audit.record(user.user_id, "sim.clock", "", {"speed": body.speed}, upstream)
+        request: dict = {"speed": body.speed}
+        if body.machine_ids:
+            request["machine_ids"] = body.machine_ids
+        upstream = await self._proxy("PUT", "/fleet/clock", payload, request)
+        if not body.machine_ids:
+            sim = dict(payload.get("sim") or {})
+            sim["speed"] = body.speed
+            payload = dict(payload)
+            payload["sim"] = sim
+            await self.settings.save(payload)
+        audit_id = self.audit.record(user.user_id, "sim.clock", "", request, upstream)
         out = SimActionOut(audit_id=audit_id, result=upstream)
         await self.session.commit()
         await self._store(idempotency_key, out)

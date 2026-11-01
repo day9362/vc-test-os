@@ -19,6 +19,19 @@ class BatchOut(BaseModel):
     remaining: int
 
 
+class BatchCreateIn(BaseModel):
+    model: str
+    count: int = Field(ge=1, le=1000)
+    defect_ratio: float = Field(default=0.0, ge=0, le=1)
+    batch_factor: float = Field(default=1.0, gt=0)
+
+
+class BatchCreateOut(BaseModel):
+    audit_id: str
+    batch: BatchOut
+    serial_numbers: list[str]
+
+
 class BatchStatOut(BaseModel):
     batch_id: str
     model: str

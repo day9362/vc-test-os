@@ -43,15 +43,16 @@ async def iter_turn(
     allowed_tools: list[str] | None = None,
     max_turns: int = 12,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> AsyncIterator[dict]:
     if not settings.anthropic_base_url or not settings.anthropic_api_key:
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
     loop = asyncio.get_running_loop()
     if sys.platform == "win32" and not isinstance(loop, asyncio.ProactorEventLoop):
-        async for event in _bridge(module, text, sdk_session_id, system, allowed_tools, max_turns, model):
+        async for event in _bridge(module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token):
             yield event
         return
-    async for event in _iter_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model):
+    async for event in _iter_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token):
         yield event
 
 
@@ -63,6 +64,7 @@ async def _bridge(
     allowed_tools: list[str] | None,
     max_turns: int,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> AsyncIterator[dict]:
     events: queue.Queue = queue.Queue()
 
@@ -72,7 +74,7 @@ async def _bridge(
             asyncio.set_event_loop(proactor)
 
             async def forward() -> None:
-                async for event in _iter_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model):
+                async for event in _iter_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token):
                     events.put(event)
 
             proactor.run_until_complete(forward())
@@ -103,13 +105,14 @@ async def run_turn(
     allowed_tools: list[str] | None = None,
     max_turns: int = 12,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> dict:
     if not settings.anthropic_base_url or not settings.anthropic_api_key:
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
     loop = asyncio.get_running_loop()
     if sys.platform == "win32" and not isinstance(loop, asyncio.ProactorEventLoop):
-        return await asyncio.to_thread(_run_on_proactor, module, text, sdk_session_id, system, allowed_tools, max_turns, model)
-    return await _run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model)
+        return await asyncio.to_thread(_run_on_proactor, module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token)
+    return await _run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token)
 
 
 def _run_on_proactor(
@@ -120,11 +123,12 @@ def _run_on_proactor(
     allowed_tools: list[str] | None,
     max_turns: int,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> dict:
     proactor = asyncio.ProactorEventLoop()
     try:
         asyncio.set_event_loop(proactor)
-        return proactor.run_until_complete(_run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model))
+        return proactor.run_until_complete(_run_turn(module, text, sdk_session_id, system, allowed_tools, max_turns, model, user_token))
     finally:
         proactor.run_until_complete(proactor.shutdown_asyncgens())
         proactor.close()
@@ -139,12 +143,13 @@ async def _run_turn(
     allowed_tools: list[str] | None = None,
     max_turns: int = 12,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> dict:
     try:
         from claude_agent_sdk import ClaudeSDKClient
     except ImportError as exc:
         raise AppError(503, "AGENT_SDK_MISSING", "没有安装 Claude Agent SDK") from exc
-    options = _options(module, sdk_session_id, system, allowed_tools, max_turns, partial=False, model=model)
+    options = _options(module, sdk_session_id, system, allowed_tools, max_turns, partial=False, model=model, user_token=user_token)
     messages: list[Any] = []
     client = ClaudeSDKClient(options=options)
     await client.connect()
@@ -170,13 +175,14 @@ async def _iter_turn(
     allowed_tools: list[str] | None = None,
     max_turns: int = 12,
     model: str | None = None,
+    user_token: str | None = None,
 ) -> AsyncIterator[dict]:
     try:
         from claude_agent_sdk import ClaudeSDKClient
     except ImportError:
         yield {"type": "error", "message": "没有安装 Claude Agent SDK"}
         return
-    options = _options(module, sdk_session_id, system, allowed_tools, max_turns, partial=True, model=model)
+    options = _options(module, sdk_session_id, system, allowed_tools, max_turns, partial=True, model=model, user_token=user_token)
     builder = TurnBuilder()
     client = ClaudeSDKClient(options=options)
     try:
@@ -193,7 +199,7 @@ async def _iter_turn(
             yield {"type": "error", "message": "Agent 没有完成这次对话", "turn": builder.finish()}
             return
     if builder.hit_turn_limit():
-        async for event in _conclude(module, builder, model):
+        async for event in _conclude(module, builder, model, user_token):
             yield event
     turn = builder.finish()
     if turn.pop("failed"):
@@ -205,7 +211,7 @@ async def _iter_turn(
 _CONCLUDE = "根据这次对话里已经返回的记录，用中文回答用户原来的问题。不要调用工具。先写结论，只使用已经出现的批次、合格数和失败项。没查到的写还没查到，不要编造。"
 
 
-async def _conclude(module: str, builder: TurnBuilder, model: str | None = None) -> AsyncIterator[dict]:
+async def _conclude(module: str, builder: TurnBuilder, model: str | None = None, user_token: str | None = None) -> AsyncIterator[dict]:
     session_id = builder.sdk_session_id
     builder.stopped_early = True
     builder.result_text = ""
@@ -215,7 +221,7 @@ async def _conclude(module: str, builder: TurnBuilder, model: str | None = None)
         return
     from claude_agent_sdk import ClaudeSDKClient
 
-    client = ClaudeSDKClient(_options(module, session_id, _CONCLUDE, [], 2, partial=True, model=model))
+    client = ClaudeSDKClient(_options(module, session_id, _CONCLUDE, [], 2, partial=True, model=model, user_token=user_token))
     try:
         await client.connect()
         try:
@@ -238,6 +244,7 @@ def _options(
     *,
     partial: bool,
     model: str | None = None,
+    user_token: str | None = None,
 ):
     from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
@@ -247,6 +254,9 @@ def _options(
     CONFIG.mkdir(parents=True, exist_ok=True)
     chosen = (model or settings.anthropic_model or "").strip() or None
     use_mcp = allowed_tools != []
+    server: dict = {"type": "http", "url": settings.mcp_url}
+    if user_token:
+        server["headers"] = {"Authorization": f"Bearer {user_token}"}
     return ClaudeAgentOptions(
         cwd=str(WORKSPACE),
         model=chosen,
@@ -255,7 +265,7 @@ def _options(
         allowed_tools=MCP_TOOLS if allowed_tools is None else allowed_tools,
         disallowed_tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"],
         permission_mode="acceptEdits",
-        mcp_servers={} if not use_mcp else {"vapor-chamber": {"type": "http", "url": settings.mcp_url}},
+        mcp_servers={} if not use_mcp else {"vc-testos": server},
         hooks=None if not use_mcp else {"PreToolUse": [HookMatcher(hooks=[strip_model_confirmation])]},
         strict_mcp_config=True,
         setting_sources=[],

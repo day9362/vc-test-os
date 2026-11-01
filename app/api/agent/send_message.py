@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_user
+from app.api.deps import bearer_token, current_user
 from app.core.clock import now_ms
 from app.core.config import settings
 from app.core.database import SessionLocal, get_session
@@ -23,12 +23,15 @@ async def send_message(
     session_id: str,
     body: MessageIn,
     user: UserEntity = Depends(current_user),
+    token: str = Depends(bearer_token),
     session: AsyncSession = Depends(get_session),
 ) -> AgentMessageOut:
     text = body.text.strip()
     if not text:
         raise AppError(422, "EMPTY_MESSAGE", "请输入内容")
-    message = await AgentSessionService(session).send(user.user_id, session_id, text, actor=user.name, model=body.model, batches=body.batches)
+    message = await AgentSessionService(session).send(
+        user.user_id, session_id, text, actor=user.name, model=body.model, batches=body.batches, user_token=token
+    )
     return AgentMessageOut.model_validate(message, from_attributes=True)
 
 
@@ -37,6 +40,7 @@ async def stream_message(
     session_id: str,
     body: MessageIn,
     user: UserEntity = Depends(current_user),
+    token: str = Depends(bearer_token),
 ) -> StreamingResponse:
     text = body.text.strip()
     if not text:
@@ -57,7 +61,7 @@ async def stream_message(
 
         wrote = False
         try:
-            async for event in iter_turn(module, prompt, sdk_session_id, model=chosen):
+            async for event in iter_turn(module, prompt, sdk_session_id, model=chosen, user_token=token):
                 turn = event.pop("turn", None) if event.get("type") == "error" else None
                 if event.get("type") == "done" or _worth_saving(turn):
                     async with SessionLocal() as db:
