@@ -13,7 +13,8 @@ router = APIRouter(tags=["runs"])
 async def run_samples(
     run_id: str,
     since: float | None = None,
+    limit: int | None = None,
     _: object = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RunSamplesOut:
-    return await RunService(session).get_samples(run_id, since)
+    return await RunService(session).get_samples(run_id, since, limit)

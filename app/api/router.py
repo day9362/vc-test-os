@@ -24,6 +24,7 @@ from app.api.machines.power_off import router as power_off_router
 from app.api.machines.maintenance import router as maintenance_router
 from app.api.machines.reset import router as reset_router
 from app.api.machines.slots import router as slots_router
+from app.api.machines.loaded_plan import router as loaded_plan_router
 from app.api.machines.plan_history import router as plan_history_router
 from app.api.test_plan.list_plans import router as list_plans_router
 from app.api.test_plan.validate_plan import router as validate_plan_router
@@ -57,6 +58,9 @@ from app.api.audit.list import router as audit_router
 from app.api.production.models import router as models_router
 from app.api.production.batches import router as batches_router
 from app.api.production.create_batch import router as create_batch_router
+from app.api.test_plan.dispatch_plan import router as dispatch_plan_router
+from app.api.products.boards import router as boards_router
+from app.api.compensation.suggestions import router as compensation_suggestions_router
 from app.api.production.batch_stats import router as batch_stats_router
 from app.api.production.batch_stat import router as batch_stat_router
 from app.api.production.get import router as production_router
@@ -99,6 +103,7 @@ api_router.include_router(power_off_router)
 api_router.include_router(maintenance_router)
 api_router.include_router(reset_router)
 api_router.include_router(slots_router)
+api_router.include_router(loaded_plan_router)
 api_router.include_router(plan_history_router)
 api_router.include_router(list_plans_router)
 api_router.include_router(validate_plan_router)
@@ -108,6 +113,7 @@ api_router.include_router(create_draft_router)
 api_router.include_router(update_draft_router)
 api_router.include_router(delete_draft_router)
 api_router.include_router(plan_detail_router)
+api_router.include_router(dispatch_plan_router)
 api_router.include_router(runs_list_router)
 api_router.include_router(runs_samples_router)
 api_router.include_router(runs_ground_truth_router)
@@ -121,6 +127,8 @@ api_router.include_router(channel_bias_router)
 api_router.include_router(suggestion_router)
 api_router.include_router(compensation_history_router)
 api_router.include_router(compensation_router)
+api_router.include_router(compensation_suggestions_router)
+api_router.include_router(boards_router)
 api_router.include_router(drifts_router)
 api_router.include_router(settings_get_router)
 api_router.include_router(settings_test_router)

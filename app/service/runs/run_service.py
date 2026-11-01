@@ -74,7 +74,7 @@ class RunService:
         row = await fill_run_detail(self.session, row)
         return run_detail_out(run_entity(row))
 
-    async def get_samples(self, run_id: str, since: float | None) -> RunSamplesOut:
+    async def get_samples(self, run_id: str, since: float | None, limit: int | None = None) -> RunSamplesOut:
         await self._ensure_fleet()
         row = await self.runs.get(run_id)
         if row is None:
@@ -84,7 +84,7 @@ class RunService:
             raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不在当前现场机台")
         row = await fill_run_detail(self.session, row)
         await fill_run_samples(self.session, run_id)
-        samples = await self.runs.samples(run_id, since)
+        samples = await self.runs.samples(run_id, since, limit)
         raw_deltas = (row.result or {}).get("deltas") or {}
         deltas = {
             key: float(value)
@@ -184,6 +184,45 @@ class RunService:
                 row.ended_at,
             ])
         return buffer.getvalue()
+
+    async def export_with_limits(self, plan_id: str, version: int | None, batch_id: str | None) -> dict:
+        from app.repo.production_repo import ProductionRepo
+        from app.service.runs.limit_csv import channel_value, columns_for, limit_map, render_csv
+        from app.service.test_plan.plan_service import PlanService
+
+        plan = await PlanService(self.session).get_plan(plan_id, version)
+        limits = limit_map([item.model_dump() for item in plan.plan.limits])
+        columns = columns_for(limits)
+        await self._ensure_fleet()
+        rows = await self.runs.list_for_export(batch_id, None, None, bool(settings.cluster_base_url), fleet_machine_ids() or None)
+        counts = {item.batch_id: item.count for item in await ProductionRepo(self.session).batches()}
+        data = []
+        for row in rows:
+            if row.status != "COMPLETED" or not row.keep_result:
+                continue
+            result = row.result if isinstance(row.result, dict) else {}
+            item = {
+                "batch_id": row.batch_id or "",
+                "serial_number": row.serial_number or "",
+                "batch_count": counts.get(row.batch_id or "", ""),
+                "run_id": row.run_id,
+                "machine_id": row.machine_id,
+                "slot_index": row.slot_index,
+                "plan_id": row.plan_id,
+                "plan_version": row.plan_version,
+                "passed": "" if row.passed is None else str(row.passed).lower(),
+                "fail_items": "|".join(row.fail_items or []),
+            }
+            for column in columns:
+                if column not in item:
+                    item[column] = channel_value(result, column)
+            data.append(item)
+        return {
+            "limits_plan_id": plan_id,
+            "version": plan.plan.version,
+            "data_rows": len(data),
+            "csv": render_csv(columns, limits, data),
+        }
 
 
 async def _ingest_in_background() -> None:

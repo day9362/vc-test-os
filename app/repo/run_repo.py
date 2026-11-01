@@ -139,11 +139,13 @@ class RunRepo:
             (await self.session.execute(stmt.order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc()))).scalars().all()
         )
 
-    async def samples(self, run_id: str, since: float | None) -> list[RunSampleOrm]:
+    async def samples(self, run_id: str, since: float | None, limit: int | None = None) -> list[RunSampleOrm]:
         stmt = select(RunSampleOrm).where(RunSampleOrm.run_id == run_id)
         if since is not None:
             stmt = stmt.where(RunSampleOrm.t_s > since)
         stmt = stmt.order_by(RunSampleOrm.t_s)
+        if limit is not None:
+            stmt = stmt.limit(max(1, min(limit, 2000)))
         return list((await self.session.execute(stmt)).scalars().all())
 
     async def recent_completed(self, fleet_ids: list[str] | None = None, limit: int = 2000) -> list[RunOrm]:
