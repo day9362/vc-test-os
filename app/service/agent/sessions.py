@@ -19,6 +19,10 @@ def session_title(text: str) -> str:
     return compact[:24] or "新对话"
 
 
+def _approval_expired(text: str) -> bool:
+    return "已经过期或已经执行过" in text
+
+
 class AgentSessionService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -93,6 +97,13 @@ class AgentSessionService:
             raise AppError(409, "IN_PROGRESS", "这个操作正在执行")
         row = await self._owned(user_id, session_id)
         message, blocks, action = await self._action(session_id, action_id)
+        if action.get("status") == "expired" or _approval_expired(str(action.get("result") or "")):
+            action["status"] = "expired"
+            action["result"] = str(action.get("result") or "这次批准已经过期或已经执行过。")[:200]
+            row.updated_at = now_ms()
+            self._store_blocks(message, blocks)
+            await self.session.commit()
+            raise AppError(409, "APPROVAL_EXPIRED", action["result"])
         if action.get("status") != "pending":
             raise AppError(409, "ALREADY_DECIDED", "这个操作已经处理过")
         if decision == "reject":
@@ -111,10 +122,13 @@ class AgentSessionService:
             _IN_FLIGHT.discard(action_id)
         if outcome.get("ok") is False:
             action["result"] = str(outcome.get("summary") or outcome.get("detail") or "没有执行")[:200]
+            if _approval_expired(action["result"]):
+                action["status"] = "expired"
             row.updated_at = now_ms()
             self._store_blocks(message, blocks)
             await self.session.commit()
-            raise AppError(409, "NOT_EXECUTED", action["result"])
+            code = "APPROVAL_EXPIRED" if action.get("status") == "expired" else "NOT_EXECUTED"
+            raise AppError(409, code, action["result"])
         action["status"] = "done"
         action["result"] = str(outcome.get("summary") or "已执行")[:200]
         row.updated_at = now_ms()

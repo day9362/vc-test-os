@@ -57,7 +57,7 @@ class ActionBlock(BaseModel):
     name: str
     desc: str
     arguments: dict[str, Any] = Field(default_factory=dict)
-    status: Literal["pending", "done", "rejected"] = "pending"
+    status: Literal["pending", "done", "rejected", "expired"] = "pending"
     result: str = ""
     risk: Literal["low", "medium", "high"] = "low"
     effects: list[str] = Field(default_factory=list)
