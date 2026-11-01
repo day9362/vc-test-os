@@ -1,0 +1,11 @@
+# 集群网关会丢弃 OpenSSL 3.5 默认带 X25519MLKEM768 的大 ClientHello，限定传统曲线。
+openssl_conf = openssl_init
+
+[openssl_init]
+ssl_conf = ssl_sect
+
+[ssl_sect]
+system_default = system_default_sect
+
+[system_default_sect]
+Groups = X25519:P-256:P-384

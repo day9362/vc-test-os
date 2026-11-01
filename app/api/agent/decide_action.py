@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_user
+from app.api.deps import bearer_token, current_user
 from app.core.database import get_session
 from app.models.dto.agent import ActionBlock, ActionDecisionIn
 from app.models.entity.user import UserEntity
@@ -16,7 +16,8 @@ async def decide_action(
     action_id: str,
     body: ActionDecisionIn,
     user: UserEntity = Depends(current_user),
+    token: str = Depends(bearer_token),
     session: AsyncSession = Depends(get_session),
 ) -> ActionBlock:
-    saved = await AgentSessionService(session).decide(user.user_id, session_id, action_id, body.decision)
+    saved = await AgentSessionService(session).decide(user.user_id, session_id, action_id, body.decision, user_token=token)
     return ActionBlock.model_validate(saved)

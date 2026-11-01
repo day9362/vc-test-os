@@ -41,6 +41,11 @@ app.include_router(api_router, prefix="/api/v1")
 app.mount("/files/reports", StaticFiles(directory=str(reports_dir())), name="report_files")
 
 
+@app.get("/health")
+async def health():
+    return {"service": "running"}
+
+
 @app.exception_handler(AppError)
 async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
     return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "detail": exc.detail}})

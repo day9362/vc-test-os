@@ -59,7 +59,8 @@ class ActionBlock(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     status: Literal["pending", "done", "rejected"] = "pending"
     result: str = ""
-    risk: Literal["low", "high"] = "low"
+    risk: Literal["low", "medium", "high"] = "low"
+    effects: list[str] = Field(default_factory=list)
 
 
 Block = Annotated[ToolBlock | TableBlock | ChartBlock | ChoicesBlock | ActionBlock, Field(discriminator="type")]

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -190,8 +191,17 @@ async def execute_figure(figure_id: str, user_name: str) -> None:
         await FigureService(session).run(figure_id, user_name)
 
 
+def _sandbox_temp_dir(figure_id: str) -> Path:
+    root = os.environ.get("SANDBOX_ROOT", "").strip()
+    if root:
+        path = Path(root)
+        path.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f"vcos-{figure_id}-", dir=path))
+    return Path(tempfile.mkdtemp(prefix=f"vcos-{figure_id}-"))
+
+
 def _execute(figure_id: str, records: list[dict], code: str) -> tuple[dict, Path | None, str]:
-    root = Path(tempfile.mkdtemp(prefix=f"vcos-{figure_id}-"))
+    root = _sandbox_temp_dir(figure_id)
     work = root / "work"
     out = root / "out"
     work.mkdir()
