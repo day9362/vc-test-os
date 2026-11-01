@@ -15,7 +15,7 @@ class TurnBuilder:
         self.displays: list[dict] = []
         self.texts: list[str] = []
         self.result_text = ""
-        self.usage = None
+        self.token_totals: list[int] | None = None
         self.sdk_session_id = None
         self.failed = False
         self.errors: list[str] = []
@@ -33,7 +33,7 @@ class TurnBuilder:
         events: list[dict] = []
         if kind == "ResultMessage":
             self.result_text = getattr(message, "result", None) or ""
-            self.usage = getattr(message, "usage", None)
+            self._add_tokens(getattr(message, "usage", None), getattr(message, "model_usage", None))
             self.sdk_session_id = getattr(message, "session_id", None)
             self.failed = bool(getattr(message, "is_error", False))
             self.errors = [str(item) for item in (getattr(message, "errors", None) or [])]
@@ -106,10 +106,20 @@ class TurnBuilder:
         return {
             "text": text,
             "blocks": blocks,
-            "tokens": _tokens(self.usage),
+            "tokens": list(self.token_totals) if self.token_totals is not None else None,
             "sdk_session_id": self.sdk_session_id,
             "failed": self.failed and not self.order and not text,
         }
+
+    def _add_tokens(self, usage: Any, model_usage: Any = None) -> None:
+        """累加本轮用量。缓存读写也算输入；多次 ResultMessage（例如补结论）要相加，不能覆盖。"""
+        found = _tokens(usage, model_usage)
+        if found is None:
+            return
+        if self.token_totals is None:
+            self.token_totals = [0, 0]
+        self.token_totals[0] += found[0]
+        self.token_totals[1] += found[1]
 
     def hit_turn_limit(self) -> bool:
         blob = "\n".join([self.result_text or "", *self.errors])
@@ -237,14 +247,46 @@ def turn_from_messages(messages: list[Any]) -> dict:
     return builder.finish()
 
 
-def _tokens(usage: Any) -> list[int] | None:
+def _tokens(usage: Any, model_usage: Any = None) -> list[int] | None:
+    from_models = _tokens_from_model_usage(model_usage)
+    if from_models is not None:
+        return from_models
     if not isinstance(usage, dict):
         return None
-    incoming = usage.get("input_tokens")
-    outgoing = usage.get("output_tokens")
+    incoming = _pick_int(usage, "input_tokens", "inputTokens", "prompt_tokens")
+    outgoing = _pick_int(usage, "output_tokens", "outputTokens", "completion_tokens")
     if incoming is None and outgoing is None:
         return None
-    return [int(incoming or 0), int(outgoing or 0)]
+    cache_read = _pick_int(usage, "cache_read_input_tokens", "cacheReadInputTokens") or 0
+    cache_create = _pick_int(usage, "cache_creation_input_tokens", "cacheCreationInputTokens") or 0
+    return [int(incoming or 0) + cache_read + cache_create, int(outgoing or 0)]
+
+
+def _tokens_from_model_usage(model_usage: Any) -> list[int] | None:
+    if not isinstance(model_usage, dict) or not model_usage:
+        return None
+    total_in = 0
+    total_out = 0
+    found = False
+    for entry in model_usage.values():
+        if not isinstance(entry, dict):
+            continue
+        found = True
+        total_in += _pick_int(entry, "inputTokens", "input_tokens") or 0
+        total_in += _pick_int(entry, "cacheReadInputTokens", "cache_read_input_tokens") or 0
+        total_in += _pick_int(entry, "cacheCreationInputTokens", "cache_creation_input_tokens") or 0
+        total_out += _pick_int(entry, "outputTokens", "output_tokens") or 0
+    return [total_in, total_out] if found else None
+
+
+def _pick_int(values: dict, *names: str) -> int | None:
+    for name in names:
+        if name in values and values[name] is not None:
+            try:
+                return int(values[name])
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _json_or_text(value: str) -> Any:

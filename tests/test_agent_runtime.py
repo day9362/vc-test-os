@@ -60,6 +60,67 @@ class TranscriptTests(unittest.TestCase):
         self.assertEqual(turn["text"], "先看机台。")
         self.assertEqual(len(turn["blocks"]), 1)
 
+    def test_tokens_include_cache_and_model_usage(self) -> None:
+        cached = turn_from_messages([_named(
+            "ResultMessage",
+            result="好的。",
+            usage={
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 200,
+            },
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        )])
+        self.assertEqual(cached["tokens"], [1120, 40])
+
+        modeled = turn_from_messages([_named(
+            "ResultMessage",
+            result="好的。",
+            usage={"input_tokens": 1, "output_tokens": 1},
+            model_usage={
+                "deepseek-flash": {
+                    "inputTokens": 90,
+                    "outputTokens": 30,
+                    "cacheReadInputTokens": 700,
+                    "cacheCreationInputTokens": 100,
+                    "webSearchRequests": 0,
+                    "costUSD": 0,
+                    "contextWindow": 128000,
+                    "maxOutputTokens": 8192,
+                }
+            },
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        )])
+        self.assertEqual(modeled["tokens"], [890, 30])
+
+    def test_tokens_accumulate_across_result_messages(self) -> None:
+        builder = TurnBuilder()
+        builder.feed(_named(
+            "ResultMessage",
+            result="先查记录。",
+            usage={"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 500},
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        ))
+        builder.feed(_named(
+            "ResultMessage",
+            result="结论：良率正常。",
+            usage={"input_tokens": 50, "output_tokens": 15},
+            model_usage=None,
+            session_id="sdk-1",
+            is_error=False,
+            errors=None,
+        ))
+        self.assertEqual(builder.finish()["tokens"], [650, 35])
+
     def test_turn_limit_keeps_a_later_answer(self) -> None:
         builder = TurnBuilder()
         builder.feed(_named(
