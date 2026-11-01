@@ -49,6 +49,9 @@ async def stream_message(
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
     async with SessionLocal() as db:
         module, sdk_session_id = await AgentSessionService(db).prepare(user.user_id, session_id, text)
+        from app.service.settings.model import configured_model
+
+        chosen = await configured_model(db)
     outgoing: asyncio.Queue = asyncio.Queue()
     started = now_ms()
     prompt = with_scope(text, body.model, body.batches)
@@ -58,7 +61,7 @@ async def stream_message(
 
         wrote = False
         try:
-            async for event in iter_turn(module, prompt, sdk_session_id, user_token=token):
+            async for event in iter_turn(module, prompt, sdk_session_id, model=chosen, user_token=token):
                 turn = event.pop("turn", None) if event.get("type") == "error" else None
                 if event.get("type") == "done" or _worth_saving(turn):
                     async with SessionLocal() as db:

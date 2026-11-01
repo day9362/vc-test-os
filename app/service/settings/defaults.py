@@ -56,6 +56,7 @@ def default_payload() -> dict:
         "ai": {
             "base_url": "https://api.example.com/v1",
             "api_key": "",
+            "model": settings.anthropic_model or "deepseek-flash",
             "monthly_budget_m": 120,
             "alert_pct": 80,
             "models": dict(DEFAULT_AI_MODELS),

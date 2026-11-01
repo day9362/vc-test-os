@@ -112,13 +112,15 @@ class ReportService:
         payload = data.model_dump(mode="json")
         payload["batch_count"] = sum(1 for item in data.batches if item.tested > 0)
         started = now_ms()
-        model_name = settings.anthropic_model or "deepseek-flash"
+        from app.service.settings.model import configured_model
+
+        model_name = await configured_model(self.session)
         input_tokens = 0
         output_tokens = 0
         error: AppError | None = None
         lines: list[str] = []
         try:
-            text, input_tokens, output_tokens, model_name = await request_summary(payload)
+            text, input_tokens, output_tokens, model_name = await request_summary(payload, model_name)
             lines = grounded_lines(text, payload)
         except AppError as exc:
             error = exc

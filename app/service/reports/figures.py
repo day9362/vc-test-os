@@ -104,11 +104,14 @@ class FigureService:
             records = await self._records(row.batch_ids)
             if not records:
                 raise AppError(400, "BAD_REQUEST", "所选批次还没有测完的片子")
+            from app.service.settings.model import configured_model
+
+            chosen = await configured_model(self.session)
             await self._step(row, "正在让模型写分析代码")
-            code, title, input_tokens, output_tokens, model_name = await _request_code(row.prompt, records, "")
+            code, title, input_tokens, output_tokens, model_name = await _request_code(row.prompt, records, "", chosen)
             blocked = reject_code(code)
             if blocked:
-                code, title, extra_in, extra_out, model_name = await _request_code(row.prompt, records, blocked)
+                code, title, extra_in, extra_out, model_name = await _request_code(row.prompt, records, blocked, chosen)
                 input_tokens += extra_in
                 output_tokens += extra_out
                 blocked = reject_code(code)
@@ -120,7 +123,7 @@ class FigureService:
             result, png, failure = await asyncio.to_thread(_execute, row.figure_id, records, code)
             if failure:
                 await self._step(row, "代码执行失败，正在重写")
-                code, title, extra_in, extra_out, model_name = await _request_code(row.prompt, records, failure)
+                code, title, extra_in, extra_out, model_name = await _request_code(row.prompt, records, failure, chosen)
                 input_tokens += extra_in
                 output_tokens += extra_out
                 if reject_code(code):
@@ -272,10 +275,10 @@ def _out(row: ReportFigureOrm) -> FigureOut:
     )
 
 
-async def _request_code(prompt: str, records: list[dict], failure: str) -> tuple[str, str, int, int, str]:
+async def _request_code(prompt: str, records: list[dict], failure: str, model: str | None = None) -> tuple[str, str, int, int, str]:
     if not settings.anthropic_base_url or not settings.anthropic_api_key:
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
-    model = settings.anthropic_model or "deepseek-flash"
+    model = (model or settings.anthropic_model or "deepseek-flash").strip()
     sample = json.dumps(records[:3], ensure_ascii=False)
     content = f"{_PROMPT}\n行数：{len(records)}\n样例：{sample}\n用户要求：{prompt}"
     if failure:

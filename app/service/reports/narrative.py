@@ -63,10 +63,10 @@ def grounded_lines(text: str, payload: dict) -> list[str]:
     return lines
 
 
-async def request_summary(payload: dict) -> tuple[str, int, int, str]:
+async def request_summary(payload: dict, model: str | None = None) -> tuple[str, int, int, str]:
     if not settings.anthropic_base_url or not settings.anthropic_api_key:
         raise AppError(503, "MODEL_NOT_CONFIGURED", "没有配置第三方模型地址或密钥")
-    model = settings.anthropic_model or "deepseek-flash"
+    model = (model or settings.anthropic_model or "deepseek-flash").strip()
     body = {
         "model": model,
         "messages": [{"role": "user", "content": _PROMPT + json.dumps(payload, ensure_ascii=False)}],
