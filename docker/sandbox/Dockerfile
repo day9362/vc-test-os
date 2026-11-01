@@ -4,6 +4,6 @@ FROM docker.m.daocloud.io/library/python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     MPLCONFIGDIR=/tmp
 
-RUN pip install --no-cache-dir pandas==2.2.3 matplotlib==3.9.2
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple pandas==2.2.3 matplotlib==3.9.2
 
 COPY runner.py /opt/runner/runner.py
