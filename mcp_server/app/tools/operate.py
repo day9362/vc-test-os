@@ -1,3 +1,4 @@
+import random
 from typing import Literal
 
 from app.approval import Preview, guarded, pick
@@ -22,6 +23,7 @@ OperateAction = Literal[
     "sim_speed",
     "sim_scenario",
     "sim_fault",
+    "requeue",
 ]
 
 MACHINE_ACTIONS = {"power_on": "power-on", "power_off": "power-off", "reset": "reset", "maintenance": "maintenance"}
@@ -38,6 +40,13 @@ async def vc_operate(
     count: int | None = None,
     defect_ratio: float | None = None,
     batch_factor: float | None = None,
+    yield_rate: float | None = None,
+    yield_random: bool | None = None,
+    yield_min: float | None = None,
+    yield_max: float | None = None,
+    count_random: bool | None = None,
+    count_min: int | None = None,
+    count_max: int | None = None,
     plan_id: str | None = None,
     plan_version: int | None = None,
     batch_id: str | None = None,
@@ -62,16 +71,18 @@ async def vc_operate(
     - slot_start：对已装板的槽开测，返回 run_id。需批准。
     - slot_test：装板并立即开测，返回 run_id。需批准。
     - slot_abort：中止该槽并松开板。需批准。
-    - slot_clear_error：清除该槽的错误。直接执行。
+    - slot_clear_error：清除该槽的错误。需批准。
+    - requeue：把已测完的标准样品 serial_number 放回待测。普通板会被拒绝。需批准。
     生产：
-    - create_batch：生成一批待测板，要 model、count，可给 defect_ratio（次品比例）、batch_factor。直接执行。
+    - create_batch：生成一批待测板，要 model。片数用 count，或 count_random 配 count_min、count_max。良率用 yield_rate（0 到 1，1 表示没有次品），或 yield_random 配 yield_min、yield_max；也可以直接给 defect_ratio。序列号由平台分配。需批准。
     - production_precheck：只做下发前检查，参数同 production_start。直接执行。
-    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一，可给 auto_recover、max_count。会先自动预检。需批准。
+    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一，可给 auto_recover、max_count。auto_recover 不填表示故障时停住。会先自动预检。需批准。
     - production_stop：停止连续生产；不给 batch_id 时停止当前生产。需批准。
-    仿真（仅仿真数据源）：
-    - sim_speed：改仿真倍率 speed；machine_ids 为空表示全部。需批准。
-    - sim_scenario：对 machine_id 应用场景 name。需批准。
-    - sim_fault：对 machine_id 注入故障 kind，可给 slot_index。需批准。场景和故障种类用 vc_data sim_catalog 查。
+    仿真（仅仿真数据源，只在用户明确要求时调用）：
+    - sim_speed：改仿真倍率 speed，必须给出 machine_ids，不会改全部机台。只缩短等待，不改变温度曲线。需批准。
+    - sim_scenario：对 machine_id 应用场景 name。需批准。先用 vc_data sim_catalog 查 name。
+    - sim_fault：对 machine_id 注入故障 kind，可给 slot_index。需批准。先用 vc_data sim_catalog 查 kind。
+    读数里 99999 和 9999 表示接触不良，-1 表示采集无应答，-2 表示回答无法解析。开测后用 vc_data 看进度，不要等测试结束。同意一次只覆盖这一次。
     confirm_id、approval 只由页面批准后使用，不要自己填写。
     """
     c = ctx()
@@ -86,6 +97,13 @@ async def vc_operate(
             "count": count,
             "defect_ratio": defect_ratio,
             "batch_factor": batch_factor,
+            "yield_rate": yield_rate,
+            "yield_random": yield_random,
+            "yield_min": yield_min,
+            "yield_max": yield_max,
+            "count_random": count_random,
+            "count_min": count_min,
+            "count_max": count_max,
             "plan_id": plan_id,
             "plan_version": plan_version,
             "batch_id": batch_id,
@@ -140,11 +158,19 @@ async def _preview(c: Ctx, action: str, args: dict):
         return await _start_preview(c, args)
     if action == "production_stop":
         return await _stop_preview(c, args)
+    if action == "create_batch":
+        return await _batch_preview(c, args)
+    if action == "requeue":
+        return await _requeue_preview(c, args)
     if action == "sim_speed":
+        if not args.get("machine_ids"):
+            return missing("machine_ids")
         if not args.get("speed") or args["speed"] <= 0:
             return bad("speed 必须大于 0。")
-        who = join_ids(args.get("machine_ids")) if args.get("machine_ids") else "全部机台"
-        return Preview(f"把 {who} 的仿真倍率改为 {args['speed']}", ["只缩短步骤之间的等待，温度计算结果不变"])
+        return Preview(
+            f"把 {join_ids(args['machine_ids'])} 的仿真倍率改为 {args['speed']}",
+            ["只缩短步骤之间的等待，温度计算结果不变"],
+        )
     if action == "sim_scenario":
         if not args.get("name") or not args.get("machine_id"):
             return await _need_catalog(c, "sim_scenario 要 name 和 machine_id。")
@@ -218,6 +244,7 @@ async def _slot_preview(c: Ctx, action: str, args: dict):
         "slot_start": f"让 {mid} 的 {index} 号槽开始测试",
         "slot_test": f"把板 {args.get('serial_number')} 装到 {mid} 的 {index} 号槽并开始测试",
         "slot_abort": f"中止 {mid} 的 {index} 号槽，松开并取下板",
+        "slot_clear_error": f"清除 {mid} 的 {index} 号槽的错误",
     }[action]
     if action == "slot_abort" and slot.get("run_id"):
         effects.append(f"记录 {slot['run_id']} 将被标记为中止")
@@ -231,7 +258,7 @@ def _production_body(args: dict) -> dict | None:
         "plan_version": args.get("plan_version"),
         "batch_id": args.get("batch_id"),
         "serial_numbers": args.get("serial_numbers"),
-        "auto_recover": args.get("auto_recover", True),
+        "auto_recover": bool(args.get("auto_recover")),
         "max_count": args.get("max_count"),
     }
     return {key: value for key, value in body.items() if value is not None}
@@ -269,8 +296,9 @@ async def _start_preview(c: Ctx, args: dict):
     if not checked.get("ok"):
         return checked
     source = f"批次 {args['batch_id']}" if args.get("batch_id") else f"{len(args['serial_numbers'])} 片指定的板"
+    recover = "故障后自动恢复并继续" if args.get("auto_recover") else "故障时停住，不自动恢复"
     warns = [item.get("message", "") for item in (checked.get("data") or {}).get("issues") or [] if item.get("level") == "warn"]
-    sentence = f"让 {join_ids(_targets(args))} 用方案 {args['plan_id']} v{args['plan_version']} 连续测试{source}"
+    sentence = f"让 {join_ids(_targets(args))} 用方案 {args['plan_id']} v{args['plan_version']} 连续测试{source}，{recover}"
     return Preview(sentence, warns, precheck=checked.get("data"))
 
 
@@ -341,12 +369,23 @@ async def _run(c: Ctx, action: str, values: dict, idem: str | None) -> dict:
             return from_reply(reply)
         return ok(f"批次 {values.get('batch_id')} 的连续生产已停止，正在测的那一片会测完。", reply.body)
     if action == "sim_speed":
-        body = {"speed": values.get("speed"), "machine_ids": values.get("machine_ids") or None}
+        if not values.get("machine_ids"):
+            return missing("machine_ids")
+        if not values.get("speed") or values["speed"] <= 0:
+            return bad("speed 必须大于 0。")
+        body = {"speed": values.get("speed"), "machine_ids": values["machine_ids"]}
         reply = await c.put("/sim/clock", body, idem=idem)
         if not reply.ok:
             return from_reply(reply)
-        who = join_ids(values.get("machine_ids")) if values.get("machine_ids") else "全部机台"
-        return ok(f"{who} 的仿真倍率已改为 {values.get('speed')}。", reply.body)
+        return ok(f"{join_ids(values['machine_ids'])} 的仿真倍率已改为 {values.get('speed')}。", reply.body)
+    if action == "requeue":
+        serial = values.get("serial_number")
+        if not serial:
+            return missing("serial_number")
+        reply = await c.post(f"/products/{serial}/requeue", None, idem=idem)
+        if not reply.ok:
+            return from_reply(reply)
+        return ok(f"标准样品 {serial} 已放回待测。", reply.body)
     if action == "sim_scenario":
         reply = await c.post(f"/sim/scenarios/{values.get('name')}/apply", {"machine_id": values.get("machine_id")}, idem=idem)
         if not reply.ok:
@@ -381,11 +420,19 @@ async def _each_machine(c: Ctx, action: str, values: dict, idem: str | None) -> 
     verb = {"power_on": "已上电", "power_off": "已关机", "reset": "已复位", "maintenance": "已切换维修模式"}[action]
     if not done:
         first = failed[0]
-        return fail(f"{join_ids([f['machine_id'] for f in failed])} 都没有成功：{first['reason']}。", first["code"], detail={"failed": failed})
-    text = f"{join_ids([d['machine_id'] for d in done])} {verb}。"
+        return fail(f"{join_ids([f['machine_id'] for f in failed])} 都没有成功：{first['reason']}。", first["code"], detail={"done": [], "failed": failed})
     if failed:
-        text += "没成功：" + "；".join(f"{f['machine_id']}（{f['reason']}）" for f in failed) + "。"
-    return ok(text, {"done": done, "failed": failed})
+        text = (
+            f"{join_ids([d['machine_id'] for d in done])} {verb}。"
+            "没成功：" + "；".join(f"{f['machine_id']}（{f['reason']}）" for f in failed) + "。"
+        )
+        return fail(
+            text,
+            "PARTIAL",
+            detail={"done": done, "failed": failed},
+            hints=["已经成功的机台不要再发。再次批准会跳过已成功的，并重试没成功的。"],
+        )
+    return ok(f"{join_ids([d['machine_id'] for d in done])} {verb}。", {"done": done, "failed": []})
 
 
 async def _slot_call(c: Ctx, values: dict, op: str, body: dict | None, idem: str | None, done_text: str) -> dict:
@@ -398,6 +445,78 @@ async def _slot_call(c: Ctx, values: dict, op: str, body: dict | None, idem: str
     if out.get("run_id"):
         text += f"，记录 {out['run_id']}"
     return ok(text + "。", out)
+
+
+async def _requeue_preview(c: Ctx, args: dict):
+    serial = args.get("serial_number")
+    if not serial:
+        return missing("serial_number")
+    reply = await c.get(f"/products/{serial}")
+    if not reply.ok:
+        return from_reply(reply)
+    board = reply.body or {}
+    if board.get("golden") is False or (board.get("state") and board.get("state") != "TESTED"):
+        return fail(f"{serial} 不是已测完的标准样品，不能放回待测。", "CONFLICT", status=409)
+    return Preview(f"把标准样品 {serial} 放回待测", ["状态回到待测后，连续生产可以再次取到它"])
+
+
+async def _batch_preview(c: Ctx, args: dict):
+    model = (args.get("model") or "").strip()
+    if not model:
+        return missing("model")
+    drawn = _draw_batch(args)
+    if isinstance(drawn, dict):
+        return drawn
+    count, yield_rate, defect_ratio = drawn
+    reply = await c.get("/models")
+    if not reply.ok:
+        return from_reply(reply)
+    names = {item.get("model") for item in reply.body or [] if isinstance(item, dict)}
+    if names and model not in names:
+        return fail(f"没有型号 {model}。", "VALIDATION_ERROR", status=422, hints=["用 vc_data models 查看已有型号"])
+    stored = {
+        "model": model,
+        "count": count,
+        "defect_ratio": defect_ratio,
+        "batch_factor": args.get("batch_factor") if args.get("batch_factor") is not None else 1.0,
+        "yield_rate": yield_rate,
+    }
+    return Preview(
+        f"生成 {count} 片型号 {model} 的待测板，良率 {yield_rate}，次品比例 {defect_ratio}",
+        ["序列号由平台分配", "这里没有每一片的等级、缺陷和真实热阻"],
+        args=stored,
+    )
+
+
+def _draw_batch(args: dict) -> tuple[int, float, float] | dict:
+    if args.get("count_random"):
+        low, high = args.get("count_min"), args.get("count_max")
+        if low is None or high is None or int(low) < 1 or int(high) < int(low):
+            return bad("随机片数要给 count_min 和 count_max，下限至少为 1，且下限不能大于上限。")
+        count = random.randint(int(low), int(high))
+    elif args.get("count") is not None:
+        count = int(args["count"])
+        if count < 1:
+            return bad("数量至少为 1 片。")
+    else:
+        return missing("count")
+    if args.get("yield_random"):
+        low, high = args.get("yield_min"), args.get("yield_max")
+        if low is None or high is None or not 0 <= float(low) <= float(high) <= 1:
+            return bad("随机良率要给 yield_min 和 yield_max，都要在 0 到 1 之间，且下限不能大于上限。")
+        yield_rate = float(low) if float(low) == float(high) else round(random.uniform(float(low), float(high)), 4)
+    elif args.get("yield_rate") is not None:
+        yield_rate = float(args["yield_rate"])
+        if not 0 <= yield_rate <= 1:
+            return bad("良率必须在 0 到 1 之间。1 表示没有次品。")
+    elif args.get("defect_ratio") is not None:
+        defect = float(args["defect_ratio"])
+        if not 0 <= defect <= 1:
+            return bad("次品比例必须在 0 到 1 之间。")
+        return count, round(1 - defect, 6), defect
+    else:
+        return missing("yield_rate 或 defect_ratio")
+    return count, yield_rate, round(min(1.0, max(0.0, 1 - yield_rate)), 6)
 
 
 async def _create_batch(c: Ctx, values: dict) -> dict:

@@ -23,13 +23,15 @@ async def vc_line(
     detail: bool = False,
     cursor: str | None = None,
     limit: int = 20,
+    loaded: bool = False,
 ) -> dict:
     """VC-TestOS 产线实时现状（只读）。回答「现在线上怎么样」「这台机在干什么」「这个槽测到哪了」。
 
     action:
     - overview：一次拿到全线概况：在线机台、槽位占用、本班测试数与良率、未确认告警、连续生产、同步状态。window 取 1h/2h 时统计近 2 小时，其余为本班 8 小时。
     - machines：机台列表。可用 status（READY/FAULT/MAINTENANCE/OFFLINE…）、comm（ONLINE/DEGRADED/DISCONNECTED）筛选。
-    - machine：一台机的详情和全部槽位，要 machine_id。detail=true 返回能力范围等完整字段。
+    - machine：一台机的详情和全部槽位，要 machine_id。detail=true 返回能力范围等完整字段。loaded=true 时再读集群上现在装的方案；没装也算成功，档案里的 plan_id 不能代替这次读取。
+    槽位步骤依次是空闲、复位、预热、放板、夹紧、测量、恢复。错误表示这一步失败。读数里 99999 和 9999 表示接触不良，-1 表示采集无应答，-2 表示回答无法解析。
     - slot：一个槽的阶段、进度、温度、真空和当前记录，要 machine_id、slot_index（从 1 开始）。detail=true 附带过程曲线。
     - production：当前连续生产的批次、方案版本和剩余数量。
     - alarms：告警列表，可按 acked、machine_id、level（critical/major/minor）筛选，分页用 cursor、limit。
@@ -44,7 +46,7 @@ async def vc_line(
     if action == "machine":
         if not machine_id:
             return missing("machine_id")
-        return await _machine(c, machine_id, detail)
+        return await _machine(c, machine_id, detail, loaded)
     if action == "slot":
         if not machine_id or slot_index is None:
             return missing("machine_id", "slot_index")
@@ -138,7 +140,7 @@ async def _machines(c: Ctx, status: str | None, comm: str | None, detail: bool) 
     return ok(f"共 {len(rows)} 台：{brief}。", {"machines": machines})
 
 
-async def _machine(c: Ctx, machine_id: str, detail: bool) -> dict:
+async def _machine(c: Ctx, machine_id: str, detail: bool, loaded: bool = False) -> dict:
     reply = await c.get(f"/machines/{machine_id}")
     if not reply.ok:
         return from_reply(reply)
@@ -154,6 +156,16 @@ async def _machine(c: Ctx, machine_id: str, detail: bool) -> dict:
     if errors:
         text += "（" + "，".join(f"{slot.get('index')} 号：{slot.get('last_error') or '出错'}" for slot in errors) + "）"
     data = m if detail else {**_brief(m), "slots": [_slot_brief(slot) for slot in slots]}
+    if loaded:
+        live = await c.get(f"/machines/{machine_id}/loaded-plan")
+        if not live.ok:
+            return from_reply(live)
+        data = {**data, "loaded_plan": live.body}
+        plan = (live.body or {}).get("plan")
+        if plan:
+            text += f"；集群上现在是 {plan.get('name') or plan.get('plan_id')} {plan.get('plan_id')} v{plan.get('version')}"
+        else:
+            text += "；集群上现在没有装方案"
     return ok(text + "。", data)
 
 

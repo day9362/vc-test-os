@@ -177,9 +177,12 @@ class WriteTests(ToolTestCase):
         self.fake.route("POST", "/machines/VC-02/reset", 503, {"error": {"code": "MACHINE_OFFLINE", "message": "机台离线"}})
         card = (await vc_operate("reset", machine_ids=["VC-01", "VC-02"]))["approval"]
         result = await vc_operate("reset", confirm_id=card["confirm_id"], approval=sign(card["confirm_id"]))
-        self.assertTrue(result["ok"], result)
-        self.assertEqual([d["machine_id"] for d in result["data"]["done"]], ["VC-01"])
-        self.assertEqual(result["data"]["failed"][0]["code"], "MACHINE_OFFLINE")
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error"]["code"], "PARTIAL")
+        self.assertEqual([d["machine_id"] for d in result["error"]["detail"]["done"]], ["VC-01"])
+        self.assertEqual(result["error"]["detail"]["failed"][0]["code"], "MACHINE_OFFLINE")
+        again = await vc_operate("reset", confirm_id=card["confirm_id"], approval=sign(card["confirm_id"]))
+        self.assertNotEqual(again["error"]["code"], "APPROVAL_INVALID")
 
     async def test_reset_without_ids_targets_online_machines(self):
         self.fake.route("GET", "/machines", 200, MACHINES)
@@ -207,6 +210,40 @@ class WriteTests(ToolTestCase):
         result = await vc_quality("apply_compensation", machine_id="VC-01", mode="add", items=[{"channel": "T1", "value": 0.2}])
         self.assertEqual(result["error"]["code"], "APPROVAL_REQUIRED")
         self.assertIn("+0.100 → +0.300", result["approval"]["effects"][0])
+
+    async def test_power_on_without_machines_asks_for_ids(self):
+        self.fake.route("GET", "/machines", 200, MACHINES)
+        result = await vc_operate("power_on")
+        self.assertEqual(result["error"]["code"], "BAD_ARGUMENT")
+        self.assertNotIn("可复位", result["summary"])
+
+    async def test_rejected_execute_keeps_approval(self):
+        self.fake.route("GET", "/machines", 200, MACHINES)
+        self.fake.route("POST", "/machines/VC-01/power-on", 409, {"error": {"code": "CONFLICT", "message": "请先复位"}})
+        card = (await vc_operate("power_on", machine_ids=["VC-01"]))["approval"]
+        first = await vc_operate("power_on", confirm_id=card["confirm_id"], approval=sign(card["confirm_id"]))
+        self.assertFalse(first["ok"])
+        self.fake.route("POST", "/machines/VC-01/power-on", 200, {"status": "IDLE"})
+        second = await vc_operate("power_on", confirm_id=card["confirm_id"], approval=sign(card["confirm_id"]))
+        self.assertTrue(second["ok"], second)
+
+    async def test_create_batch_needs_approval(self):
+        self.fake.route("GET", "/models", 200, [{"model": "A1", "power_w": 2.5}])
+        result = await vc_operate("create_batch", model="A1", count=2, yield_rate=1)
+        self.assertEqual(result["error"]["code"], "APPROVAL_REQUIRED")
+        self.assertEqual(result["approval"]["arguments"]["count"], 2)
+        self.assertEqual(result["approval"]["arguments"]["defect_ratio"], 0)
+
+    async def test_speed_without_machines_is_rejected(self):
+        result = await vc_operate("sim_speed", speed=2)
+        self.assertEqual(result["error"]["code"], "BAD_ARGUMENT")
+
+    async def test_delete_draft_needs_approval_without_plan_body(self):
+        from app.tools.plan import vc_plan
+
+        result = await vc_plan("delete_draft", plan_id="P1")
+        self.assertEqual(result["error"]["code"], "APPROVAL_REQUIRED")
+        self.assertIn("删除草稿", result["approval"]["sentence"])
 
     async def test_approval_without_secret(self):
         settings.mcp_approval_secret = ""

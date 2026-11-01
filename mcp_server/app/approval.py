@@ -14,11 +14,16 @@ from app.text import now_ms
 
 RISK: dict[tuple[str, str], str] = {
     ("vc_plan", "publish"): "medium",
+    ("vc_plan", "delete_draft"): "medium",
+    ("vc_plan", "dispatch"): "medium",
     ("vc_operate", "power_on"): "medium",
     ("vc_operate", "maintenance"): "medium",
     ("vc_operate", "slot_load"): "medium",
     ("vc_operate", "slot_start"): "medium",
     ("vc_operate", "slot_test"): "medium",
+    ("vc_operate", "slot_clear_error"): "medium",
+    ("vc_operate", "create_batch"): "medium",
+    ("vc_operate", "requeue"): "medium",
     ("vc_operate", "production_start"): "medium",
     ("vc_operate", "sim_speed"): "medium",
     ("vc_operate", "power_off"): "high",
@@ -29,6 +34,7 @@ RISK: dict[tuple[str, str], str] = {
     ("vc_operate", "sim_fault"): "high",
     ("vc_quality", "ack_all"): "medium",
     ("vc_quality", "apply_compensation"): "medium",
+    ("vc_quality", "report_export"): "medium",
 }
 
 
@@ -64,9 +70,10 @@ class MemoryStore:
         return found[1]
 
     async def take(self, key: str) -> str | None:
-        value = await self.get(key)
-        self._items.pop(key, None)
-        return value
+        found = self._items.pop(key, None)
+        if found is None or found[0] < time.monotonic():
+            return None
+        return found[1]
 
     async def aclose(self) -> None:
         return None
@@ -85,12 +92,12 @@ class RedisStore:
         return await self._redis.get(key)
 
     async def take(self, key: str) -> str | None:
-        # 旧版 Redis 没有 GETDEL，用 GET + DEL 模拟一次性取出。
-        value = await self._redis.get(key)
-        if value is None:
-            return None
-        await self._redis.delete(key)
-        return value
+        # GET 和 DEL 放在同一条脚本里，避免两次批准同时取到同一条记录。
+        return await self._redis.eval(
+            "local v = redis.call('GET', KEYS[1])\nif v then redis.call('DEL', KEYS[1]) end\nreturn v",
+            1,
+            key,
+        )
 
     async def aclose(self) -> None:
         await self._redis.aclose()
@@ -124,7 +131,13 @@ async def guarded(
         return checked
     stored = checked.args if checked.args is not None else args
     confirm = "cf_" + secrets.token_hex(12)
-    record = {"user": c.identity.user_id, "tool": tool, "action": action, "args": stored}
+    record = {
+        "user": c.identity.user_id,
+        "tool": tool,
+        "action": action,
+        "args": stored,
+        "exp": int(time.time()) + settings.approval_ttl_s,
+    }
     await get_store().put(_key(confirm), json.dumps(record, ensure_ascii=False), settings.approval_ttl_s)
     card = {
         "confirm_id": confirm,
@@ -146,17 +159,30 @@ async def _approved(c: Ctx, tool: str, action: str, confirm_id: str, approval: s
     if not confirm_id or not approval or not hmac.compare_digest(sign(confirm_id), approval):
         return _invalid("批准凭证不对。需要用户在页面上点批准。")
     store = get_store()
-    raw = await store.get(_key(confirm_id))
+    raw = await store.take(_key(confirm_id))
     if raw is None:
         return _invalid("这次批准已经过期或已经执行过。")
     record = json.loads(raw)
     if record.get("user") != c.identity.user_id:
+        await _restore(store, confirm_id, raw, record)
         return _invalid("批准人和发起人不是同一个用户。")
     if record.get("tool") != tool or record.get("action") != action:
+        await _restore(store, confirm_id, raw, record)
         return _invalid("批准的操作和这次调用的不一致。")
-    if await store.take(_key(confirm_id)) is None:
-        return _invalid("这次批准已经执行过。")
-    return await execute(record.get("args") or {}, confirm_id)
+    try:
+        result = await execute(record.get("args") or {}, confirm_id)
+    except Exception:
+        await _restore(store, confirm_id, raw, record)
+        raise
+    if not result.get("ok"):
+        await _restore(store, confirm_id, raw, record)
+    return result
+
+
+async def _restore(store, confirm_id: str, raw: str, record: dict) -> None:
+    remain = int(record.get("exp") or 0) - int(time.time())
+    if remain > 0:
+        await store.put(_key(confirm_id), raw, remain)
 
 
 def _invalid(summary: str) -> dict:

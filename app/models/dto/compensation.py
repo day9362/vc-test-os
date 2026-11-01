@@ -44,6 +44,20 @@ class SuggestionOut(BaseModel):
     basis_at: int
 
 
+class SuggestionCreateIn(BaseModel):
+    machine_id: str
+    channel: str
+    proposed_delta: float
+    unit: str = "℃"
+    reason: str = ""
+    method: str = ""
+    evidence_run_ids: list[str] = []
+
+
+class StoredSuggestionOut(SuggestionCreateIn):
+    suggestion_id: str
+
+
 class HistoryItemOut(BaseModel):
     id: str
     time: int

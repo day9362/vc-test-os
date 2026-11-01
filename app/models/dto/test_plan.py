@@ -42,6 +42,25 @@ class PlanItemOut(BaseModel):
     meta: PlanMetaOut
 
 
+class DispatchIn(BaseModel):
+    plan_id: str
+    version: int
+    machine_ids: list[str]
+
+
+class DispatchFailure(BaseModel):
+    machine_id: str
+    reason: str
+
+
+class DispatchOut(BaseModel):
+    plan_id: str
+    version: int
+    succeeded: list[str]
+    failed: list[DispatchFailure]
+    audit_id: str
+
+
 class PublishIn(PlanBody):
     plan_id: str | None = None
 
