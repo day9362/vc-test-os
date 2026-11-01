@@ -50,16 +50,17 @@ function yieldText(row: BatchStat) {
 }
 
 async function loadScope() {
-  const [modelRows, statPage, planRows, machineRows] = await Promise.all([
-    api<{ model: string }[]>('/models'),
-    api<{ items: BatchStat[] }>('/batch-stats?limit=50'),
-    api<{ meta?: { draft?: boolean } }[]>('/plans'),
-    api<{ machine_id: string }[]>('/machines'),
+  const signal = AbortSignal.timeout(20_000)
+  const [modelRes, statRes, planRes, machineRes] = await Promise.allSettled([
+    api<{ model: string }[]>('/models', { signal }),
+    api<{ items: BatchStat[] }>('/batch-stats?limit=50', { signal }),
+    api<{ meta?: { draft?: boolean } }[]>('/plans', { signal }),
+    api<{ machine_id: string }[]>('/machines', { signal }),
   ])
-  modelOptions.value = modelRows
-  batchRows.value = statPage.items || []
-  publishedPlans.value = planRows.filter((row) => row.meta && !row.meta.draft).length
-  machineCount.value = machineRows.length
+  if (modelRes.status === 'fulfilled') modelOptions.value = modelRes.value
+  if (statRes.status === 'fulfilled') batchRows.value = statRes.value.items || []
+  if (planRes.status === 'fulfilled') publishedPlans.value = planRes.value.filter((row) => row.meta && !row.meta.draft).length
+  if (machineRes.status === 'fulfilled') machineCount.value = machineRes.value.length
   const preferred = modelOptions.value.find((row) => batchRows.value.some((batch) => batch.model === row.model))
   scope.value.model = preferred?.model || modelOptions.value[0]?.model || ''
   scope.value.batches = visibleBatches.value.slice(0, 3).map((row) => row.batch_id)
@@ -287,14 +288,17 @@ async function reject(b: Extract<Block, { type: 'action' }>) {
 async function settle(b: Extract<Block, { type: 'action' }>, decision: 'approve' | 'reject') {
   acting.value = b.id
   try {
+    // 批准会串 MCP→后端→集群；集群偶发超时可达数十秒。给明确上限，避免按钮一直转圈像卡死。
     const saved = await api<Extract<Block, { type: 'action' }>>(`/agent/sessions/${currentId.value}/actions/${b.id}`, {
       method: 'POST',
       body: JSON.stringify({ decision }),
+      signal: AbortSignal.timeout(90_000),
     })
     Object.assign(b, saved)
     app.toast({ kind: decision === 'approve' ? 'ok' : 'info', title: decision === 'approve' ? '已执行' : '已拒绝该操作', desc: saved.result || b.desc })
   } catch (err) {
-    const message = err instanceof Error ? err.message : '请求失败'
+    const timedOut = err instanceof DOMException && err.name === 'TimeoutError'
+    const message = timedOut ? '执行超时，集群可能正忙，请稍后重试' : err instanceof Error ? err.message : '请求失败'
     if (decision === 'approve') b.result = message
     if (approvalExpired(message)) b.status = 'expired'
     app.toast({ kind: 'danger', title: approvalExpired(message) ? '批准已失效' : decision === 'approve' ? '没有执行' : '没有拒绝', desc: message })

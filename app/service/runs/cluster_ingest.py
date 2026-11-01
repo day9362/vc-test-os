@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from time import monotonic
 
 import httpx
 from sqlalchemy import delete, or_, select
@@ -12,13 +13,20 @@ from app.core.database import SessionLocal
 from app.models.orm.run import RunOrm, RunSampleOrm
 
 _cached_fleet: list[str] = []
+_fleet_fail_at = 0.0
+_FLEET_FAIL_TTL_S = 5.0
 _metrics_task: asyncio.Task | None = None
 _skip_metrics: set[str] = set()
 
 
-def _client() -> httpx.Client:
+def _client(timeout: float | None = None) -> httpx.Client:
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
-    return httpx.Client(timeout=max(settings.cluster_timeout_s, 20), follow_redirects=True, trust_env=False, headers=headers)
+    return httpx.Client(
+        timeout=timeout if timeout is not None else max(settings.cluster_timeout_s, 20),
+        follow_redirects=True,
+        trust_env=False,
+        headers=headers,
+    )
 
 
 def _get(path: str) -> dict | list | None:
@@ -26,6 +34,17 @@ def _get(path: str) -> dict | list | None:
     if not base:
         return None
     with _client() as client:
+        res = client.get(f"{base}{path}")
+        res.raise_for_status()
+        return res.json()
+
+
+def _get_fleet(path: str) -> dict | list | None:
+    """机台列表过滤用：短超时，避免 Agent 预览 /machines 时被集群拖死。"""
+    base = settings.cluster_base_url.rstrip("/")
+    if not base:
+        return None
+    with _client(timeout=min(float(settings.cluster_timeout_s), 5.0)) as client:
         res = client.get(f"{base}{path}")
         res.raise_for_status()
         return res.json()
@@ -49,16 +68,21 @@ def _parse_fleet(body: object) -> list[str]:
 
 
 async def refresh_fleet() -> list[str]:
-    global _cached_fleet
+    global _cached_fleet, _fleet_fail_at
     if not settings.cluster_base_url:
         return []
+    if _cached_fleet:
+        return list(_cached_fleet)
+    if _fleet_fail_at and monotonic() - _fleet_fail_at < _FLEET_FAIL_TTL_S:
+        return []
     try:
-        body = await asyncio.to_thread(_get, "/fleet")
+        body = await asyncio.to_thread(_get_fleet, "/fleet")
         ids = _parse_fleet(body)
         if ids:
             _cached_fleet = ids
+            _fleet_fail_at = 0.0
     except Exception:
-        pass
+        _fleet_fail_at = monotonic()
     return list(_cached_fleet)
 
 

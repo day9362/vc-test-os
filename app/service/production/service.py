@@ -78,7 +78,7 @@ class ProductionService:
         return production_out(row)
 
     async def precheck_body(self, body: ProductionIn) -> PrecheckOut:
-        await self._prepare()
+        await self._prepare(force=True)
         issues = await self._issues(body)
         return PrecheckOut(ok=not any(item.level == "danger" for item in issues), issues=issues)
 
@@ -86,7 +86,7 @@ class ProductionService:
         cached = await self._cached(key)
         if cached:
             return StartOut.model_validate(cached)
-        await self._prepare()
+        await self._prepare(force=True)
         context = await self._context(body)
         plan_name = context.pop("plan_name")
         issues = precheck(body, sim_mode=sim_mode(), **context)
@@ -148,14 +148,14 @@ class ProductionService:
             await push_batch(stat_out(row).model_dump())
         return result
 
-    async def _prepare(self) -> None:
+    async def _prepare(self, *, force: bool = False) -> None:
         try:
             if not await self.repo.models() or not await self.repo.batches():
                 await self.sync.pull()
         except IntegrityError:
             await self.session.rollback()
         await ingest_cluster_plans(self.session)
-        await self.sync.refresh_stats()
+        await self.sync.refresh_stats(force=force)
         await self.session.commit()
 
     async def _issues(self, body: ProductionIn):

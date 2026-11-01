@@ -47,6 +47,21 @@ async def sync_cluster(session: AsyncSession) -> None:
                 if now_ms() >= deadline:
                     log.warning("cluster sync budget exhausted after %s", row.machine_id)
                     break
+                # fleet 摘要常不带 slot_count；补一次机台详情，避免本地仍是种子的 10 槽
+                if not item.get("slot_count"):
+                    try:
+                        detail = await client.get(
+                            f"{base}/machines/{row.machine_id}",
+                            headers=headers,
+                            timeout=slot_timeout,
+                        )
+                        detail.raise_for_status()
+                        payload = detail.json() if detail.content else {}
+                        if isinstance(payload, dict) and payload.get("slot_count") is not None:
+                            row.slot_count = int(payload["slot_count"])
+                            await _prune_slots(session, row.machine_id, row.slot_count)
+                    except Exception as exc:
+                        log.warning("machine detail sync skipped for %s: %s", row.machine_id, exc)
                 try:
                     slots = await client.get(
                         f"{base}/machines/{row.machine_id}/slots",
@@ -272,11 +287,14 @@ async def _upsert_machine(session: AsyncSession, item: dict) -> MachineOrm:
 
 
 async def _replace_slots(session: AsyncSession, machine_id: str, slots: list) -> None:
+    """用集群当前槽位覆盖本地。集群缩容后必须删掉多余槽，否则 Agent 会按脏数据去中止不存在的槽，集群直接 500。"""
     existing = {row.index: row for row in (await session.execute(select(SlotOrm).where(SlotOrm.machine_id == machine_id))).scalars()}
+    seen: set[int] = set()
     for item in slots:
         if not isinstance(item, dict) or "index" not in item:
             continue
         index = int(item["index"])
+        seen.add(index)
         row = existing.get(index)
         if row is None:
             row = SlotOrm(machine_id=machine_id, index=index, phase=item.get("phase") or "IDLE")
@@ -284,6 +302,20 @@ async def _replace_slots(session: AsyncSession, machine_id: str, slots: list) ->
         for field in ("phase", "serial_number", "tests_done", "last_error", "power_w", "vacuum_kpa", "t0", "t1", "ta", "progress", "run_id"):
             if field in item:
                 setattr(row, field, item[field])
+    for index, row in existing.items():
+        if index not in seen:
+            await session.delete(row)
+    machine = await session.get(MachineOrm, machine_id)
+    if machine is not None and seen:
+        machine.slot_count = len(seen)
+
+
+async def _prune_slots(session: AsyncSession, machine_id: str, slot_count: int) -> None:
+    if slot_count <= 0:
+        return
+    rows = (await session.execute(select(SlotOrm).where(SlotOrm.machine_id == machine_id, SlotOrm.index > slot_count))).scalars().all()
+    for row in rows:
+        await session.delete(row)
 
 
 async def _summaries(session: AsyncSession, machine_ids: list[str]) -> list[dict]:

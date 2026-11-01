@@ -230,7 +230,11 @@ async def _slot_preview(c: Ctx, action: str, args: dict):
     reply = await c.get(f"/machines/{mid}")
     if not reply.ok:
         return from_reply(reply)
-    slot = next((item for item in (reply.body or {}).get("slots") or [] if item.get("index") == index), None)
+    body = reply.body or {}
+    slot_count = int(body.get("slot_count") or 0)
+    if slot_count and int(index) > slot_count:
+        return fail(f"{mid} 只有 {slot_count} 个槽，没有 {index} 号槽。", "NOT_FOUND", status=404)
+    slot = next((item for item in body.get("slots") or [] if item.get("index") == index), None)
     if slot is None:
         return fail(f"{mid} 没有 {index} 号槽。", "NOT_FOUND", status=404)
     phase = slot.get("phase")

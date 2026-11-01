@@ -14,7 +14,7 @@ class MachineRepo:
         grouped: dict[str, list[SlotOrm]] = {}
         for slot in slots:
             grouped.setdefault(slot.machine_id, []).append(slot)
-        return [(machine, grouped.get(machine.machine_id, [])) for machine in machines]
+        return [(machine, _visible_slots(machine, grouped.get(machine.machine_id, []))) for machine in machines]
 
     async def get_with_slots(self, machine_id: str) -> tuple[MachineOrm, list[SlotOrm]] | None:
         machine = await self.session.get(MachineOrm, machine_id)
@@ -23,7 +23,15 @@ class MachineRepo:
         slots = (await self.session.execute(
             select(SlotOrm).where(SlotOrm.machine_id == machine_id).order_by(SlotOrm.index)
         )).scalars().all()
-        return machine, list(slots)
+        return machine, _visible_slots(machine, list(slots))
+
+
+def _visible_slots(machine: MachineOrm, slots: list[SlotOrm]) -> list[SlotOrm]:
+    """种子数据可能残留超出 slot_count 的槽；读的时候裁掉，避免 Agent 对不存在的槽发起中止。"""
+    limit = int(machine.slot_count or 0)
+    if limit <= 0:
+        return slots
+    return [slot for slot in slots if slot.index <= limit]
 
     async def search(self, q: str, limit: int) -> list[MachineOrm]:
         pattern = f"%{q}%"

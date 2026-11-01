@@ -24,7 +24,7 @@ async def get_cluster(path: str) -> dict | list | None:
         return None
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
     try:
-        async with httpx.AsyncClient(timeout=max(settings.cluster_timeout_s, 8)) as client:
+        async with httpx.AsyncClient(timeout=max(settings.cluster_timeout_s, 8), trust_env=False) as client:
             response = await client.get(f"{base}{path}", headers=headers)
     except httpx.TimeoutException as exc:
         raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc

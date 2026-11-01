@@ -49,7 +49,7 @@ async def _catalog_job() -> None:
         try:
             sync = CatalogSync(session)
             await sync.pull()
-            snapshot, batches = await sync.refresh_stats()
+            snapshot, batches = await sync.refresh_stats(force=True)
             await session.commit()
         except Exception:
             await session.rollback()

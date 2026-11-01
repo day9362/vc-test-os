@@ -96,6 +96,8 @@ class SlotCommandService(MachineCommandService):
 
     async def _slot(self, machine_id: str, index: int) -> tuple[MachineOrm, SlotOrm]:
         machine, slots = await self._require_online(machine_id)
+        if machine.slot_count and index > machine.slot_count:
+            raise AppError(404, "NOT_FOUND", f"{machine_id} 只有 {machine.slot_count} 个槽，没有 {index} 号槽")
         slot = next((item for item in slots if item.index == index), None)
         if slot is None:
             raise AppError(404, "NOT_FOUND", f"{machine_id} 没有 {index} 号槽")
