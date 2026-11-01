@@ -21,7 +21,7 @@ type Block =
   | { type: 'chart'; id: string; title: string; option: Record<string, any> }
   | { type: 'choices'; id: string; options: { label: string; text: string }[]; chosen: number | null }
   | { type: 'plan'; plan_id: string; name: string; fields: [string, string][] }
-  | { type: 'action'; id: string; name: string; desc: string; arguments: Record<string, any>; status: 'pending' | 'done' | 'rejected'; result: string; risk: 'low' | 'high' }
+  | { type: 'action'; id: string; name: string; desc: string; arguments: Record<string, any>; status: 'pending' | 'done' | 'rejected' | 'expired'; result: string; risk: 'low' | 'medium' | 'high' }
 interface Msg { id: number; role: 'user' | 'agent'; text: string; blocks: Block[]; module?: string; tokens?: [number, number]; time: number; live?: boolean }
 
 const CAPS = [
@@ -268,7 +268,7 @@ async function pick(block: Extract<Block, { type: 'choices' }>, index: number) {
 }
 
 async function approve(b: Extract<Block, { type: 'action' }>) {
-  if (!currentId.value || !b.id || acting.value) return
+  if (!currentId.value || !b.id || acting.value || isExpired(b)) return
   const ok = await app.confirm({
     title: '执行集群操作',
     desc: b.desc,
@@ -281,7 +281,7 @@ async function approve(b: Extract<Block, { type: 'action' }>) {
   await settle(b, 'approve')
 }
 async function reject(b: Extract<Block, { type: 'action' }>) {
-  if (!currentId.value || !b.id || acting.value) return
+  if (!currentId.value || !b.id || acting.value || isExpired(b)) return
   await settle(b, 'reject')
 }
 async function settle(b: Extract<Block, { type: 'action' }>, decision: 'approve' | 'reject') {
@@ -296,17 +296,40 @@ async function settle(b: Extract<Block, { type: 'action' }>, decision: 'approve'
   } catch (err) {
     const message = err instanceof Error ? err.message : '请求失败'
     if (decision === 'approve') b.result = message
-    app.toast({ kind: 'danger', title: decision === 'approve' ? '没有执行' : '没有拒绝', desc: message })
+    if (approvalExpired(message)) b.status = 'expired'
+    app.toast({ kind: 'danger', title: approvalExpired(message) ? '批准已失效' : decision === 'approve' ? '没有执行' : '没有拒绝', desc: message })
   } finally {
     acting.value = ''
   }
 }
 
+function approvalExpired(text: string) {
+  return text.includes('已经过期或已经执行过')
+}
+function isExpired(block: Extract<Block, { type: 'action' }>) {
+  return block.status === 'expired' || (block.status === 'pending' && approvalExpired(block.result || ''))
+}
 function pendingBlocks(message: Msg) {
-  return message.blocks.filter((block): block is Extract<Block, { type: 'action' }> => block.type === 'action' && block.status === 'pending')
+  return message.blocks.filter((block): block is Extract<Block, { type: 'action' }> => block.type === 'action' && block.status === 'pending' && !isExpired(block))
+}
+function reviewBlocks(message: Msg) {
+  return message.blocks.filter((block): block is Extract<Block, { type: 'action' }> => block.type === 'action' && (block.status === 'pending' || block.status === 'expired' || isExpired(block)))
 }
 function hasPending() {
   return msgs.value.some((message) => pendingBlocks(message).length > 0)
+}
+function hasReview() {
+  return msgs.value.some((message) => reviewBlocks(message).length > 0)
+}
+const located = ref('')
+function locateAction(id: string) {
+  const node = scroller.value?.querySelector(`[data-action-id="${CSS.escape(id)}"]`)
+  if (!(node instanceof HTMLElement)) return
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  located.value = id
+  window.setTimeout(() => {
+    if (located.value === id) located.value = ''
+  }, 1600)
 }
 const sessionTokenIn = computed(() => msgs.value.reduce((a, m) => a + (m.tokens?.[0] || 0), 0))
 const sessionTokenOut = computed(() => msgs.value.reduce((a, m) => a + (m.tokens?.[1] || 0), 0))
@@ -371,7 +394,7 @@ onMounted(() => {
       </div>
       <div class="safe">
         <ShieldCheck :size="16" />
-        <p>Agent 通过 cluster MCP 查看和控制仿真测试机。写操作会先出现在右侧，点批准后才会执行，拒绝则不会执行。</p>
+        <p>Agent 通过 cluster MCP 查看和控制仿真测试机。写操作会列在右侧，点一下可定位到对话里的卡片，在卡片上批准后才会执行。</p>
       </div>
     </aside>
 
@@ -434,20 +457,21 @@ onMounted(() => {
                   <div v-for="f in b.fields" :key="f[0]"><span class="mono">{{ f[0] }}</span><b class="num">{{ f[1] }}</b></div>
                 </div>
               </div>
-              <div v-else-if="b.type === 'action'" class="card act" :class="b.status">
+              <div v-else-if="b.type === 'action'" class="card act" :data-action-id="b.id" :class="[b.status, { expired: isExpired(b), located: located === b.id }]">
                 <div class="ch">
-                  <span v-if="b.status === 'pending'" class="hz hazard" />
+                  <span v-if="b.status === 'pending' && !isExpired(b)" class="hz hazard" />
                   <Wrench :size="14" /><span class="desc grow">{{ b.desc }}</span>
-                  <span v-if="b.status === 'pending'" class="tag warn">待确认</span>
+                  <span v-if="isExpired(b)" class="tag">失效</span>
+                  <span v-else-if="b.status === 'pending'" class="tag warn">待确认</span>
                   <span v-else-if="b.status === 'done'" class="tag ok">已执行</span>
                   <span v-else class="tag">已拒绝</span>
                 </div>
                 <pre class="api"><b>{{ b.name }}</b>
 {{ JSON.stringify(b.arguments || {}, null, 2) }}</pre>
                 <p v-if="b.result" class="fs-xs" style="padding: 0 10px 8px">{{ b.result }}</p>
-                <div v-if="b.status === 'pending'" class="row" style="padding: 0 10px 10px; justify-content: flex-end">
-                  <button class="btn btn-sm" :disabled="acting === b.id" @click="reject(b)"><X :size="14" />拒绝</button>
-                  <button class="btn btn-sm btn-primary" :disabled="acting === b.id" @click="approve(b)"><Check :size="14" />批准并执行</button>
+                <div v-if="b.status === 'pending' || isExpired(b)" class="row act-actions" style="padding: 0 10px 10px; justify-content: flex-end">
+                  <button class="btn btn-sm" :disabled="isExpired(b) || acting === b.id" @click="reject(b)"><X :size="14" />拒绝</button>
+                  <button class="btn btn-sm btn-primary" :disabled="isExpired(b) || acting === b.id" @click="approve(b)"><Check :size="14" />批准并执行</button>
                 </div>
               </div>
             </template>
@@ -485,16 +509,14 @@ onMounted(() => {
       <Panel title="待确认操作" code="PENDING" :icon="ShieldCheck" :accent="hasPending() ? 'warn' : undefined" flush>
         <ul class="pend">
           <template v-for="message in msgs" :key="message.id">
-            <li v-for="block in pendingBlocks(message)" :key="block.id">
-              <span class="mono fs-xs"><b>{{ toolLabel(block.name) }}</b></span>
-              <span class="fs-sm pend-desc">{{ block.desc }}</span>
-              <div class="row" style="justify-content: flex-end">
-                <button class="btn btn-sm btn-ghost" :disabled="acting === block.id" @click="reject(block)">拒绝</button>
-                <button class="btn btn-sm btn-primary" :disabled="acting === block.id" @click="approve(block)">批准并执行</button>
-              </div>
+            <li v-for="block in reviewBlocks(message)" :key="block.id">
+              <button type="button" class="pend-jump" :class="{ expired: isExpired(block) }" @click="locateAction(block.id)">
+                <span class="mono fs-xs"><b>{{ toolLabel(block.name) }}</b> <span v-if="isExpired(block)" class="tag">失效</span><span v-else class="tag warn">待确认</span></span>
+                <span class="fs-sm pend-desc">{{ block.desc }}</span>
+              </button>
             </li>
           </template>
-          <li v-if="!hasPending()" class="none">没有待确认的操作</li>
+          <li v-if="!hasReview()" class="none">没有待确认的操作</li>
         </ul>
       </Panel>
       <div class="usage">
@@ -560,6 +582,15 @@ onMounted(() => {
 .kv b { color: var(--c-text); font-size: var(--fs-sm); }
 .act.pending { border-color: var(--c-warn); }
 .act.rejected { opacity: 0.6; }
+.act.expired { border-color: var(--c-border); background: var(--c-surface-2); color: var(--c-text-3); }
+.act.expired .act-actions .btn {
+  --_bg: var(--c-text-3);
+  --_fg: var(--c-bg);
+  --_bd: var(--c-text-3);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.act.located { outline: 2px solid var(--c-primary); }
 .hz { position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
 .api { margin: 10px; padding: 8px 10px; background: var(--c-surface-2); border: var(--bw) solid var(--c-border); font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; }
 .api b { color: var(--c-primary); }
@@ -579,7 +610,10 @@ onMounted(() => {
 .bopt { display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; font-weight: 400 !important; }
 .bopt input { accent-color: var(--c-primary); }
 .pend { list-style: none; margin: 0; padding: 0; }
-.pend li { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-bottom: var(--bw) solid var(--c-border); min-width: 0; }
+.pend li { border-bottom: var(--bw) solid var(--c-border); min-width: 0; }
+.pend-jump { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 10px 12px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.pend-jump:hover { background: var(--c-surface-3); }
+.pend-jump.expired { background: var(--c-surface-2); color: var(--c-text-3); }
 .pend-desc { overflow-wrap: anywhere; line-height: 1.45; }
 .pend .none { color: var(--c-text-3); font-size: var(--fs-sm); text-align: center; padding: 20px; }
 .usage { display: flex; align-items: baseline; gap: 6px; padding: 10px 12px; background: var(--c-surface); border: var(--bw) solid var(--c-border); }
