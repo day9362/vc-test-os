@@ -208,8 +208,11 @@ class UsageService:
 
     async def _models(self) -> dict[str, str]:
         ai = (await self._payload()).get("ai") or {}
-        models = dict(DEFAULT_AI_MODELS)
-        models.update({str(key): str(value) for key, value in (ai.get("models") or {}).items() if value})
+        from app.service.settings.model import shared_model
+
+        chosen = shared_model(ai)
+        models = {module_id: chosen for module_id in DEFAULT_AI_MODELS}
+        models.update({str(key): str(value) for key, value in (ai.get("models") or {}).items() if value and str(key) not in DEFAULT_AI_MODELS})
         return models
 
     async def _prices(self) -> dict:

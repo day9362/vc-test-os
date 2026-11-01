@@ -40,6 +40,7 @@ class StorageSettings:
 class AiSettings:
     base_url: str
     api_key: str
+    model: str
     monthly_budget_m: float
     alert_pct: int
     models: dict[str, str]

@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.test_plan import DeleteOut, DraftOut, FromTextOut, PlanBody, PlanItemOut, PublishIn, PublishOut, ValidateOut
 from app.models.entity.user import UserEntity
@@ -130,14 +129,17 @@ class PlanService:
             return FromTextOut.model_validate(cached)
         if not text.strip():
             raise AppError(400, "BAD_REQUEST", "描述不能为空")
+        from app.service.settings.model import configured_model
+
         started = now_ms()
+        chosen = await configured_model(self.session)
         try:
-            body, notes, usage = await generate_draft(text)
+            body, notes, usage = await generate_draft(text, chosen)
         except AppError:
             await UsageService(self.session).record(
                 module="agent.plan",
                 user=user.name,
-                model=settings.anthropic_model or "agent",
+                model=chosen,
                 input_tokens=0,
                 output_tokens=0,
                 latency_ms=max(now_ms() - started, 1),
@@ -150,7 +152,7 @@ class PlanService:
         await UsageService(self.session).record(
             module="agent.plan",
             user=user.name,
-            model=settings.anthropic_model or "agent",
+            model=chosen,
             input_tokens=usage.input,
             output_tokens=usage.output,
             latency_ms=max(now_ms() - started, 1),

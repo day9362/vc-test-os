@@ -1,6 +1,8 @@
 from urllib.parse import urlsplit, urlunsplit
 
+from app.core.config import settings
 from app.models.dto.settings import PlatformSettingsOut
+from app.service.settings.model import shared_model
 from app.models.entity.settings import (
     AiSettings,
     ClusterSettings,
@@ -76,6 +78,7 @@ def settings_entity(payload: dict, updated_at: int) -> PlatformSettings:
         ai=AiSettings(
             base_url=ai.get("base_url") or "",
             api_key=ai.get("api_key") or "",
+            model=shared_model(ai),
             monthly_budget_m=float(ai.get("monthly_budget_m") or 0),
             alert_pct=int(ai.get("alert_pct") or 0),
             models=dict(ai.get("models") or {}),
@@ -139,6 +142,10 @@ def settings_out(entity: PlatformSettings) -> PlatformSettingsOut:
         sim=entity.sim.__dict__,
         jobs=[job.__dict__ for job in entity.jobs],
         storage=entity.storage.__dict__ | {"dsn": mask_dsn(entity.storage.dsn)},
-        ai=entity.ai.__dict__ | {"api_key": mask_secret(entity.ai.api_key)},
+        ai=entity.ai.__dict__ | {
+            "base_url": settings.anthropic_base_url,
+            "api_key": mask_secret(settings.anthropic_api_key),
+            "model": entity.ai.model or shared_model({}),
+        },
         rules=entity.rules.__dict__,
     )

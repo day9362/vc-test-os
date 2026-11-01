@@ -19,7 +19,7 @@ export interface PlatformSettings {
   sim: { base_url: string; speed: number; use_ground_truth: boolean }
   jobs: SyncJob[]
   storage: { dsn: string; samples_days: number; runs_days: number; agg_5m: boolean; object_store: string }
-  ai: { base_url: string; api_key: string; monthly_budget_m: number; alert_pct: number; models: Record<AiModule, string> }
+  ai: { base_url: string; api_key: string; model: string; monthly_budget_m: number; alert_pct: number; models: Record<AiModule, string> }
   rules: { drift_c: number; we_rules: string[]; sentinel_as_data_anomaly: boolean; degraded_alarm: boolean; ack_timeout_min: number }
 }
 
@@ -42,11 +42,12 @@ const DEFAULTS: PlatformSettings = {
   jobs: DEFAULT_JOBS,
   storage: { dsn: 'postgresql://vcos@127.0.0.1:5432/vcos', samples_days: 400, runs_days: 1095, agg_5m: true, object_store: 'minio://127.0.0.1:9000/vcos' },
   ai: {
-    base_url: 'https://api.example.com/v1',
+    base_url: '',
     api_key: '',
+    model: 'deepseek-flash',
     monthly_budget_m: 120,
     alert_pct: 80,
-    models: Object.fromEntries(AI_MODULES.map((m) => [m.id, m.model])) as Record<AiModule, string>,
+    models: Object.fromEntries(AI_MODULES.map((m) => [m.id, 'deepseek-flash'])) as Record<AiModule, string>,
   },
   rules: { drift_c: 0.15, we_rules: ['WE-1', 'WE-2', 'WE-4'], sentinel_as_data_anomaly: true, degraded_alarm: true, ack_timeout_min: 15 },
 }
@@ -60,7 +61,7 @@ function normalize(body: PlatformSettings): PlatformSettings {
   next.sim = { ...next.sim, ...body.sim }
   next.jobs = body.jobs?.length ? body.jobs : next.jobs
   next.storage = { ...next.storage, ...body.storage }
-  next.ai = { ...next.ai, ...body.ai, models: { ...next.ai.models, ...(body.ai?.models || {}) } }
+  next.ai = { ...next.ai, ...body.ai, model: body.ai?.model || next.ai.model, models: { ...next.ai.models, ...(body.ai?.models || {}) } }
   next.rules = { ...next.rules, ...body.rules, we_rules: body.rules?.we_rules?.length ? [...body.rules.we_rules] : next.rules.we_rules }
   return next
 }
@@ -93,7 +94,10 @@ export const useSettingsStore = defineStore('settings', () => {
     draft.value = clone(saved.value)
   }
   function reset() {
+    const gateway = { base_url: saved.value.ai.base_url, api_key: saved.value.ai.api_key }
     draft.value = clone(DEFAULTS)
+    draft.value.ai.base_url = gateway.base_url
+    draft.value.ai.api_key = gateway.api_key
   }
   function commitSpeed(speed: number) {
     draft.value.sim.speed = speed

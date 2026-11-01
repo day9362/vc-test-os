@@ -10,7 +10,7 @@ import { api } from '@/api/http'
 import type { FaultInfo } from '@/api/types'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
-import { AI_MODULES, faultCatalog, SCENARIOS } from '@/mock/cluster'
+import { faultCatalog, SCENARIOS } from '@/mock/cluster'
 import { ago, dt } from '@/utils/format'
 
 const s = useSettingsStore()
@@ -52,7 +52,8 @@ async function testConn() {
   testing.value = false
 }
 
-const showKey = ref(false)
+const aiModules = ref<{ id: string; name: string; where: string; trigger: string }[]>([])
+const MODEL_CHOICES = ['deepseek-flash', 'deepseek-v3', 'qwen3-max']
 const showToken = ref(false)
 const minInterval = (k: string) => (k === 'slots' || k === 'samples' ? 1 : k === 'fleet' ? 1 : 5)
 const reqPerMin = computed(() => d.value.jobs.filter((j) => j.enabled).reduce((a, j) => a + (60 / j.interval_s) * (/\{id\}/.test(j.api) ? 12 : 1), 0))
@@ -159,6 +160,7 @@ onMounted(async () => {
   machines.value = fleet.map((item) => item.machine_id)
   if (machines.value.length && !machines.value.includes(scenarioTarget.value)) scenarioTarget.value = machines.value[0]
   await loadAudit()
+  aiModules.value = await api<{ id: string; name: string; where: string; trigger: string }[]>('/ai/modules').catch(() => [])
   if (s.saved.source !== 'sim') return
   const [scene, catalog] = await Promise.all([
     api<{ items: { name: string }[] }>('/sim/scenarios').catch(() => null),
@@ -322,27 +324,32 @@ onBeforeRouteLeave(async () => {
         <!-- AI -->
         <Panel id="sec-ai" title="AI 接入" code="LLM GATEWAY" :icon="Bot">
           <div class="fgrid">
-            <div class="field span-2"><label for="ai">接口地址（OpenAI 兼容）</label><input id="ai" v-model="d.ai.base_url" class="input mono" /></div>
+            <div class="field span-2">
+              <label for="ai">接口地址</label>
+              <input id="ai" class="input mono" :value="d.ai.base_url || '未配置'" readonly />
+              <span class="hint">来自服务环境变量，不在这里修改</span>
+            </div>
             <div class="field">
               <label for="key">API Key</label>
-              <div class="row">
-                <input id="key" v-model="d.ai.api_key" class="input mono grow" :type="showKey ? 'text' : 'password'" placeholder="sk-…" autocomplete="off" />
-                <button class="btn btn-icon" v-tip="showKey ? '隐藏' : '显示'" @click="showKey = !showKey"><EyeOff v-if="showKey" :size="16" /><Eye v-else :size="16" /></button>
-              </div>
+              <input id="key" class="input mono" :value="d.ai.api_key || '未配置'" readonly />
+            </div>
+            <div class="field">
+              <label for="mdl">共用模型</label>
+              <select id="mdl" v-model="d.ai.model" class="select">
+                <option v-for="name in MODEL_CHOICES" :key="name" :value="name">{{ name }}</option>
+              </select>
+              <span class="hint">Agent、方案草稿和报告总结都用这一个</span>
             </div>
             <div class="field"><label for="bg">月度预算</label><div class="unit-in"><input id="bg" v-model.number="d.ai.monthly_budget_m" class="input num" type="number" /><span>M tokens</span></div></div>
             <div class="field"><label for="al">用到预算的</label><div class="unit-in"><input id="al" v-model.number="d.ai.alert_pct" class="input num" type="number" min="10" max="100" /><span>% 提醒</span></div></div>
           </div>
-          <h4 class="code-label" style="margin: 16px 0 8px">各模块使用的模型</h4>
+          <h4 class="code-label" style="margin: 16px 0 8px">接入的模块</h4>
           <div class="mods">
-            <div v-for="m in AI_MODULES" :key="m.id" class="mod">
+            <div v-for="m in aiModules" :key="m.id" class="mod">
               <div class="grow" style="min-width: 0"><b class="fs-sm">{{ m.name }}</b><div class="fs-xs muted ellipsis">{{ m.where }} · {{ m.trigger }}</div></div>
-              <select v-model="d.ai.models[m.id]" class="select" style="width: 140px" :aria-label="`${m.name} 模型`">
-                <option value="deepseek-v3">deepseek-v3</option>
-                <option value="qwen3-max">qwen3-max</option>
-                <option value="qwen3-32b-local">qwen3-32b（本地）</option>
-              </select>
+              <span class="mono fs-xs">{{ d.ai.model }}</span>
             </div>
+            <div v-if="!aiModules.length" class="mod"><span class="fs-sm muted">模块清单没有读到</span></div>
           </div>
         </Panel>
 

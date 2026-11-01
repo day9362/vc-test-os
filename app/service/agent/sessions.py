@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.clock import now_ms
-from app.core.config import settings
 from app.core.errors import AppError
 from app.models.orm.agent_session import AgentMessageOrm, AgentSessionOrm
 
@@ -140,19 +139,24 @@ class AgentSessionService:
         from app.service.agent.runtime import run_turn
         from app.service.agent.scope import with_scope
 
+        from app.service.settings.model import configured_model
+
         started = now_ms()
         module, sdk_session_id = await self.prepare(user_id, session_id, text)
-        turn = await run_turn(module, with_scope(text, model, batches or []), sdk_session_id, user_token=user_token)
+        chosen = await configured_model(self.session)
+        turn = await run_turn(module, with_scope(text, model, batches or []), sdk_session_id, model=chosen, user_token=user_token)
         return await self.save_reply(user_id, session_id, turn, actor=actor, started_ms=started)
 
     async def _record_usage(self, module: str, actor: str, turn: dict | None, started_ms: int, session_id: str, ok: bool) -> None:
         from app.service.ai.usage import UsageService
 
+        from app.service.settings.model import configured_model
+
         tokens = (turn or {}).get("tokens") or [0, 0]
         await UsageService(self.session).record(
             module=module,
             user=actor or "用户",
-            model=settings.anthropic_model or "agent",
+            model=await configured_model(self.session),
             input_tokens=int(tokens[0] or 0),
             output_tokens=int(tokens[1] or 0) if len(tokens) > 1 else 0,
             latency_ms=max(now_ms() - started_ms, 1),
