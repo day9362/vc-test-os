@@ -308,7 +308,9 @@ function pendingBlocks(message: Msg) {
 function hasPending() {
   return msgs.value.some((message) => pendingBlocks(message).length > 0)
 }
-const sessionTokens = computed(() => msgs.value.reduce((a, m) => a + (m.tokens ? m.tokens[0] + m.tokens[1] : 0), 0))
+const sessionTokenIn = computed(() => msgs.value.reduce((a, m) => a + (m.tokens?.[0] || 0), 0))
+const sessionTokenOut = computed(() => msgs.value.reduce((a, m) => a + (m.tokens?.[1] || 0), 0))
+const sessionTokens = computed(() => sessionTokenIn.value + sessionTokenOut.value)
 
 function toggleBatch(id: string) {
   const s = scope.value.batches
@@ -497,7 +499,9 @@ onMounted(() => {
       </Panel>
       <div class="usage">
         <span class="code-label">本次对话</span>
-        <b class="num">{{ sessionTokens.toLocaleString() }}</b><span class="fs-xs muted">tokens</span>
+        <b class="num">{{ sessionTokens.toLocaleString() }}</b>
+        <span class="fs-xs muted">tokens</span>
+        <span v-if="sessionTokens" class="fs-xs muted num">{{ sessionTokenIn.toLocaleString() }} 入 / {{ sessionTokenOut.toLocaleString() }} 出</span>
         <button class="btn btn-ghost btn-sm" @click="router.push('/tokens')">统计<ChevronRight :size="14" /></button>
       </div>
     </aside>
