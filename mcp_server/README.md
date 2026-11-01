@@ -4,6 +4,8 @@
 
 ## 启动
 
+本地进程：
+
 ```powershell
 cd d:\AI项目\backend_api\mcp_server
 copy .env.example .env
@@ -11,6 +13,8 @@ copy .env.example .env
 $env:PYTHONPATH = "d:\AI项目\backend_api\mcp_server"
 d:\AI项目\backend_api\.venv\Scripts\python.exe -m app.main
 ```
+
+Docker（与前后端一起）：见仓库 `docker/README.md`，根目录执行 `docker compose up -d --build`。
 
 健康检查：`GET http://127.0.0.1:8100/health`
 

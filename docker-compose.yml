@@ -1,18 +1,116 @@
+# 一键拉起：postgres + redis + backend + mcp + frontend（+ 报告图沙箱镜像）
+# 用法见 docker/README.md
 services:
+  # 与本机 PostgreSQL 18 同版本，便于 pg_dump / pg_restore 互导。
+  # 宿主机 5432 已被本机 PostgreSQL 服务占用，所以映射到 5433。
   postgres:
-    image: postgres:16
+    image: docker.m.daocloud.io/library/postgres:18
     environment:
       POSTGRES_USER: vcos
       POSTGRES_PASSWORD: vcos
       POSTGRES_DB: vcos
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - vcos_pg:/var/lib/postgresql/data
+      - vcos_pg18:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vcos -d vcos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   redis:
     image: redis:7
+    # 宿主机 6379 常被本机 redis-server 占用；对外改 6380，容器内仍是 redis:6379。
     ports:
-      - "6379:6379"
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 仅用于构建报告图沙箱镜像，容器本身立即退出。
+  sandbox:
+    image: vc-test-os-sandbox:1
+    build:
+      context: ./docker/sandbox
+      dockerfile: Dockerfile
+    entrypoint: ["true"]
+    restart: "no"
+
+  backend:
+    image: vc-test-os-backend:1
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://vcos:vcos@postgres:5432/vcos
+      DATABASE_SEARCH_PATH: ${DOCKER_DATABASE_SEARCH_PATH:-frontui}
+      REDIS_URL: redis://redis:6379/0
+      CLUSTER_TIMEOUT_S: ${CLUSTER_TIMEOUT_S:-8}
+      MCP_URL: http://mcp:8100/mcp/
+      REPORTS_DIR: data/reports
+      SANDBOX_ROOT: /sandbox
+      SANDBOX_VOLUME: vcos_sandbox
+    ports:
+      - "8000:8000"
+    volumes:
+      - vcos_reports:/app/data/reports
+      - vcos_agent:/app/.agent
+      - vcos_sandbox:/sandbox
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy
+      sandbox:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  mcp:
+    image: vc-test-os-mcp:1
+    build:
+      context: .
+      dockerfile: docker/mcp/Dockerfile
+    env_file:
+      - .env
+      - path: mcp_server/.env
+        required: false
+    environment:
+      VC_API_BASE: http://backend:8000/api/v1
+      REDIS_URL: redis://redis:6379/0
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8100"
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    image: vc-test-os-frontend:1
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
-  vcos_pg:
+  vcos_pg18:
+  vcos_reports:
+  vcos_agent:
+  vcos_sandbox:
+    name: vcos_sandbox

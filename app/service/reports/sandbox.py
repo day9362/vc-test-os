@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -43,9 +44,8 @@ def run_in_sandbox(work: Path, out: Path) -> str:
         "--security-opt", "no-new-privileges",
         "--memory", "512m", "--pids-limit", "64", "--cpus", "1",
         "--tmpfs", "/tmp:rw,size=64m",
-        "-v", f"{work.resolve()}:/work:ro",
-        "-v", f"{out.resolve()}:/out",
         "-e", "MPLCONFIGDIR=/tmp",
+        *(_volume_args(work, out)),
         IMAGE,
         "python", "/opt/runner/runner.py",
     ]
@@ -76,6 +76,27 @@ def read_result(out: Path) -> tuple[dict, bool]:
     except json.JSONDecodeError:
         return {}, False
     return (data if isinstance(data, dict) else {}), (out / "figure.png").exists()
+
+
+def _volume_args(work: Path, out: Path) -> list[str]:
+    """容器内通过命名卷共享沙箱目录；本机开发仍用路径绑定。"""
+    volume = os.environ.get("SANDBOX_VOLUME", "").strip()
+    root = os.environ.get("SANDBOX_ROOT", "").strip()
+    if volume and root:
+        base = Path(root).resolve()
+        rel_work = work.resolve().relative_to(base).as_posix()
+        rel_out = out.resolve().relative_to(base).as_posix()
+        return [
+            "-v", f"{volume}:/sandbox",
+            "-e", f"WORK_DIR=/sandbox/{rel_work}",
+            "-e", f"OUT_DIR=/sandbox/{rel_out}",
+        ]
+    return [
+        "-v", f"{work.resolve()}:/work:ro",
+        "-v", f"{out.resolve()}:/out",
+        "-e", "WORK_DIR=/work",
+        "-e", "OUT_DIR=/out",
+    ]
 
 
 def _plain(value: object, depth: int) -> object:
