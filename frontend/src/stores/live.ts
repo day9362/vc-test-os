@@ -162,7 +162,30 @@ export const useLiveStore = defineStore('live', () => {
     }
   }
 
+  let snapshotInflight: Promise<void> | null = null
+  let snapshotQueued = false
+
   async function snapshot() {
+    // 重连或首屏会叠着打 /batch-stats、/production，和 Agent 批准抢集群连接；同一时刻只跑一轮。
+    if (snapshotInflight) {
+      snapshotQueued = true
+      return snapshotInflight
+    }
+    snapshotInflight = (async () => {
+      try {
+        await runSnapshot()
+      } finally {
+        snapshotInflight = null
+        if (snapshotQueued) {
+          snapshotQueued = false
+          void snapshot()
+        }
+      }
+    })()
+    return snapshotInflight
+  }
+
+  async function runSnapshot() {
     const [mr, ar, gr, pr, pipe] = await Promise.all([
       read<Machine[] | { items: Machine[] }>('/machines'),
       read<{ items: Alarm[] }>('/alarms?limit=50'),

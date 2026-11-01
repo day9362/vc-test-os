@@ -400,9 +400,30 @@ async function load() {
 let timer = 0
 let socket: WebSocket | null = null
 let runTimer = 0
+let wsTimer = 0
+let inflight: Promise<void> | null = null
+let queued = false
+
+// slots 每台机台每秒推一次，逐条刷新会把后端连接池打满，这里只保留一个在途请求
+function requestRefresh() {
+  if (inflight) {
+    queued = true
+    return
+  }
+  inflight = refreshLive()
+    .catch((exc) => { loadError.value = exc instanceof Error ? exc.message : '后端不可用' })
+    .finally(() => {
+      inflight = null
+      if (queued) {
+        queued = false
+        requestRefresh()
+      }
+    })
+}
+
 watch(rf, () => {
   window.clearTimeout(runTimer)
-  runTimer = window.setTimeout(() => { refreshLive().catch(() => undefined) }, 300)
+  runTimer = window.setTimeout(requestRefresh, 300)
 }, { deep: true })
 
 async function exportCsv() {
@@ -428,7 +449,7 @@ onMounted(async () => {
   } catch (exc) {
     loadError.value = exc instanceof Error ? exc.message : '后端不可用'
   }
-  timer = window.setInterval(() => { refreshLive().catch((exc) => { loadError.value = exc instanceof Error ? exc.message : '后端不可用' }) }, 5000)
+  timer = window.setInterval(requestRefresh, 5000)
   try {
     const ws = new WebSocket(await wsUrl())
     socket = ws
@@ -437,7 +458,7 @@ onMounted(async () => {
       try {
         if (JSON.parse(event.data).topic === 'ping') return
       } catch { /* 刷新 */ }
-      refreshLive().catch(() => undefined)
+      if (!wsTimer) wsTimer = window.setTimeout(() => { wsTimer = 0; requestRefresh() }, 1000)
     }
   } catch {
     /* 轮询仍会刷新 */
@@ -445,6 +466,7 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   window.clearInterval(timer)
+  window.clearTimeout(wsTimer)
   window.clearTimeout(precheckTimer)
   socket?.close()
 })

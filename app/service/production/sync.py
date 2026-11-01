@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections import defaultdict
 from time import monotonic
@@ -19,6 +20,9 @@ _batch_seen: dict[str, tuple] = {}
 _production_seen: tuple | None = None
 _fleet_queue_at = 0.0
 _fleet_queue: int | None = None
+_refresh_at = 0.0
+_refresh_lock = asyncio.Lock()
+_REFRESH_TTL_S = 5.0
 
 
 def _mean(values: list[float]) -> float:
@@ -126,22 +130,33 @@ class CatalogSync:
         await self._batches()
         await self._production()
 
-    async def refresh_stats(self) -> tuple[dict | None, list[dict]]:
-        # 每次刷批次状态都先对齐集群连续生产，避免只靠 30s catalog 时本地 active 挂死。
-        await self._production()
-        grouped = await self.repo.runs_grouped()
-        production = await self.repo.production_row()
-        if production.active and await fleet_queue_remaining() == 0:
-            _close_stuck_production(production, grouped.get(production.batch_id, []))
-        for row in await self.repo.batches():
-            apply_run_stats(row, grouped.get(row.batch_id, []), production)
-        if production.active:
-            batch = await self.repo.batch(production.batch_id)
-            if batch is not None:
-                production.queue_remaining = batch.remaining
-        snapshot = _production_snapshot(production)
-        changed = _changed_batches(await self.repo.batches())
-        return snapshot, changed
+    async def refresh_stats(self, *, force: bool = False) -> tuple[dict | None, list[dict]]:
+        """对齐集群连续生产并回填批次统计。
+
+        列表接口会高频调用这里；默认 5 秒内复用上次结果，避免把集群连接打满，
+        导致生成批次、下发方案这类写操作超时。开始/停止生产时传 force=True。
+        """
+        global _refresh_at
+        async with _refresh_lock:
+            if not force and _refresh_at and monotonic() - _refresh_at < _REFRESH_TTL_S:
+                production = await self.repo.production_row()
+                return _production_snapshot(production), []
+            # 每次刷批次状态都先对齐集群连续生产，避免只靠 30s catalog 时本地 active 挂死。
+            await self._production()
+            grouped = await self.repo.runs_grouped()
+            production = await self.repo.production_row()
+            if production.active and await fleet_queue_remaining() == 0:
+                _close_stuck_production(production, grouped.get(production.batch_id, []))
+            for row in await self.repo.batches():
+                apply_run_stats(row, grouped.get(row.batch_id, []), production)
+            if production.active:
+                batch = await self.repo.batch(production.batch_id)
+                if batch is not None:
+                    production.queue_remaining = batch.remaining
+            snapshot = _production_snapshot(production)
+            changed = _changed_batches(await self.repo.batches())
+            _refresh_at = monotonic()
+            return snapshot, changed
 
     async def _models(self) -> None:
         try:
