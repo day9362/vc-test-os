@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -21,6 +21,19 @@ const props = withDefaults(defineProps<{ option: Record<string, any>; height?: n
 const tk = useTokens()
 const theme = useThemeStore()
 
+function liftCumulative(axis: any) {
+  if (!Array.isArray(axis) || axis.length < 2) return axis
+  return axis.map((item: any, index: number) => (index > 0 && item?.max === 100 ? { ...item, max: 120 } : item))
+}
+
+const chart = ref<{ getDataURL?: (opts: { type: string; pixelRatio: number; backgroundColor: string }) => string; chart?: { getDataURL?: (opts: { type: string; pixelRatio: number; backgroundColor: string }) => string } } | null>(null)
+function image() {
+  const target = chart.value
+  const api = typeof target?.getDataURL === 'function' ? target : target?.chart
+  return api?.getDataURL?.({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' }) ?? ''
+}
+defineExpose({ image })
+
 const merged = computed(() => {
   const t = tk.value
   const axis = (a: any) => ({
@@ -33,12 +46,22 @@ const merged = computed(() => {
   })
   const o = props.option
   const mapAxis = (x: any) => (x === undefined ? undefined : Array.isArray(x) ? x.map(axis) : axis(x))
+  const dual = Array.isArray(o.yAxis)
+  const grid = { left: 48, right: dual ? 72 : 18, top: dual ? 40 : 28, bottom: 40, containLabel: true }
+  const legend = {
+    textStyle: { color: t['text-2'], fontSize: 11 },
+    itemWidth: 12,
+    itemHeight: 3,
+    icon: 'rect',
+    top: 0,
+    ...(dual ? { left: 0 } : { right: 0 }),
+  }
+  const yAxis = mapAxis(o.yAxis)
   return {
     animationDuration: 300,
     animationDurationUpdate: 300,
     color: t.chart,
     textStyle: { fontFamily: t.sans, color: t['text-2'] },
-    grid: { left: 44, right: 16, top: 24, bottom: 28, containLabel: false },
     tooltip: {
       trigger: 'axis',
       backgroundColor: t.surface,
@@ -49,16 +72,18 @@ const merged = computed(() => {
       axisPointer: { lineStyle: { color: t['text-3'], type: 'dashed' }, crossStyle: { color: t['text-3'] } },
       extraCssText: 'border-radius:2px;box-shadow:0 6px 16px -6px rgba(0,0,0,.25);',
     },
-    legend: { textStyle: { color: t['text-2'], fontSize: 11 }, itemWidth: 12, itemHeight: 3, icon: 'rect', top: 0, right: 0 },
     ...o,
+    grid: o.grid || grid,
+    legend: o.legend || legend,
     xAxis: mapAxis(o.xAxis),
-    yAxis: mapAxis(o.yAxis),
+    yAxis: liftCumulative(yAxis),
   }
 })
 </script>
 
 <template>
   <VChart
+    ref="chart"
     :key="theme.revision"
     class="chart"
     :option="merged"

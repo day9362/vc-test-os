@@ -230,8 +230,14 @@ class CardTests(unittest.TestCase):
             self.assertEqual(len(cards[0]["rows"]), 8)
             self.assertEqual(cards[0]["rows"][0][2], "—")
             short = root / "short.json"
-            short.write_text(json.dumps({"runs": [{"run_id": "R1"}]}), encoding="utf-8")
-            self.assertEqual(present_cards("vc_data", json.dumps({"ok": True, "full_file": str(short)}), roots=[root]), [])
+            short.write_text(json.dumps({"runs": [{"run_id": "R1", "serial_number": "SN-1", "batch_id": "B-1"}]}), encoding="utf-8")
+            one = present_cards("vc_data", json.dumps({"ok": True, "full_file": str(short)}), roots=[root])
+            self.assertEqual(one[0]["type"], "records")
+            self.assertEqual(one[0]["items"][0]["run_id"], "R1")
+            self.assertEqual(one[0]["items"][0]["label"], "B-1 · SN-1")
+            inline = present_cards("vc_data", json.dumps({"ok": True, "data": {"batch_id": "B-9", "model": "tb158"}}))
+            self.assertEqual(inline[0]["type"], "records")
+            self.assertEqual(inline[0]["items"][0]["batch_id"], "B-9")
             self.assertEqual(present_cards("vc_data", json.dumps({"ok": True, "full_file": str(outside)}), roots=[root]), [])
 
     def test_samples_become_a_chart_without_copying_every_point(self) -> None:

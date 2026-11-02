@@ -51,6 +51,21 @@ class ChoicesBlock(BaseModel):
     chosen: int | None = None
 
 
+class RecordItem(BaseModel):
+    run_id: str = ""
+    serial_number: str = ""
+    batch_id: str = ""
+    ended_at: int = 0
+    label: str = ""
+
+
+class RecordsBlock(BaseModel):
+    type: Literal["records"] = "records"
+    id: str
+    items: list[RecordItem]
+    more: int = 0
+
+
 class ActionBlock(BaseModel):
     type: Literal["action"] = "action"
     id: str
@@ -63,7 +78,7 @@ class ActionBlock(BaseModel):
     effects: list[str] = Field(default_factory=list)
 
 
-Block = Annotated[ToolBlock | TableBlock | ChartBlock | ChoicesBlock | ActionBlock, Field(discriminator="type")]
+Block = Annotated[ToolBlock | TableBlock | ChartBlock | ChoicesBlock | RecordsBlock | ActionBlock, Field(discriminator="type")]
 
 
 class ActionDecisionIn(BaseModel):

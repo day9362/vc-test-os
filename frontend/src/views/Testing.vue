@@ -8,7 +8,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import EChart from '@/components/EChart.vue'
-import { api, apiBlob, wsUrl } from '@/api/http'
+import { api, apiDownload, saveBlob, wsUrl } from '@/api/http'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useTokens } from '@/composables/useTokens'
@@ -231,7 +231,14 @@ function report(ids: string[]) {
   router.push({ path: '/report', query: { b: ids.join(',') } })
 }
 
-const rf = ref({ machine: 'all', passed: 'all', kw: '' })
+const rf = ref({
+  machine: 'all',
+  passed: 'all',
+  kw: typeof route.query.q === 'string' ? route.query.q : '',
+  batch: typeof route.query.batch === 'string' ? route.query.batch : '',
+})
+const pickedRuns = ref<string[]>([])
+const exporting = ref(false)
 const passedQuery = computed(() => ({ all: '', pass: 'true', fail: 'false', none: 'null' }[rf.value.passed]))
 const runList = computed(() => runs.value)
 const reportBatches = computed(() => [...new Set(runs.value.map((r) => r.batch_id).filter((id): id is string => !!id))])
@@ -370,6 +377,7 @@ async function refreshLive() {
   if (rf.value.machine !== 'all') query.set('machine_id', rf.value.machine)
   if (passedQuery.value) query.set('passed', passedQuery.value)
   if (rf.value.kw.trim()) query.set('q', rf.value.kw.trim())
+  if (rf.value.batch.trim()) query.set('batch_id', rf.value.batch.trim())
   const [machineRows, statRows, batchRows, runRows] = await Promise.all([
     api<Machine[]>('/machines'),
     pageAll<BatchStatRow>('/batch-stats'),
@@ -380,6 +388,8 @@ async function refreshLive() {
   batchStats.value = statRows
   batches.value = batchRows
   runs.value = runRows.items
+  const visible = new Set(runRows.items.map((item) => item.run_id))
+  pickedRuns.value = pickedRuns.value.filter((id) => visible.has(id))
   loadError.value = ''
 }
 
@@ -426,20 +436,57 @@ watch(rf, () => {
   runTimer = window.setTimeout(requestRefresh, 300)
 }, { deep: true })
 
-async function exportCsv() {
+async function downloadFile(path: string, title: string) {
+  exporting.value = true
   try {
-    const blob = await apiBlob('/export/production.csv')
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = 'production.csv'
-    link.click()
-    URL.revokeObjectURL(url)
-    app.toast({ kind: 'ok', title: '已导出生产结果表' })
+    const file = await apiDownload(path)
+    saveBlob(file.blob, file.filename)
+    app.toast({ kind: 'ok', title, desc: file.filename })
   } catch (exc) {
     app.toast({ kind: 'danger', title: '导出失败', desc: exc instanceof Error ? exc.message : '导出失败' })
+  } finally {
+    exporting.value = false
   }
 }
+
+function exportCsv() {
+  return downloadFile('/export/production.csv?group=day', '已导出结果表')
+}
+
+function exportPickedRaw() {
+  const query = pickedRuns.value.map((id) => `run_id=${encodeURIComponent(id)}`).join('&')
+  return downloadFile(`/export/raw?${query}`, '已导出过程数据')
+}
+
+function exportOneRaw(runId: string) {
+  return downloadFile(`/export/raw?run_id=${encodeURIComponent(runId)}`, '已导出过程数据')
+}
+
+function toggleRun(id: string) {
+  pickedRuns.value = pickedRuns.value.includes(id) ? pickedRuns.value.filter((item) => item !== id) : [...pickedRuns.value, id]
+}
+
+function clearBatch() {
+  rf.value.batch = ''
+  const query = { ...route.query }
+  delete query.batch
+  router.replace({ query })
+}
+
+watch(() => route.query.r, (id) => {
+  if (typeof id === 'string' && id) {
+    tab.value = 'runs'
+    void openRun(id)
+  }
+})
+watch(() => [route.query.batch, route.query.q], () => {
+  const batch = typeof route.query.batch === 'string' ? route.query.batch : ''
+  const q = typeof route.query.q === 'string' ? route.query.q : ''
+  if (rf.value.batch === batch && rf.value.kw === q) return
+  rf.value.batch = batch
+  if (q) rf.value.kw = q
+  if (batch || q) tab.value = 'runs'
+})
 
 onMounted(async () => {
   try {
@@ -476,7 +523,7 @@ onBeforeUnmount(() => {
   <div class="page">
     <p v-if="loadError" class="fs-sm" style="color: var(--c-danger); margin: 0">{{ loadError }}</p>
     <PageHeader title="测试执行" desc="下发方案并开始连续生产 · 跟踪批次进度 · 历史批次与报告">
-      <button class="btn" @click="exportCsv"><Download :size="16" />导出结果表</button>
+      <button class="btn" :disabled="exporting" @click="exportCsv"><Download :size="16" />导出结果表</button>
       <button class="btn btn-primary" @click="open = true"><Play :size="16" />新建测试任务</button>
     </PageHeader>
 
@@ -529,13 +576,17 @@ onBeforeUnmount(() => {
       </Panel>
 
       <Panel title="实时测试记录" code="RUNS · STREAM" :icon="ListChecks" flush>
-        <template #actions><button class="btn btn-ghost btn-sm" @click="tab = 'runs'">全部记录<ArrowRight :size="14" /></button></template>
+        <template #actions>
+          <button class="btn btn-sm" :disabled="!pickedRuns.length || exporting" @click="exportPickedRaw"><Download :size="14" />导出过程数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
+          <button class="btn btn-ghost btn-sm" @click="tab = 'runs'">全部记录<ArrowRight :size="14" /></button>
+        </template>
         <div class="table-wrap" style="border-top: 0">
           <table class="table">
-            <thead><tr><th>结束时间</th><th>run_id</th><th>机台#槽位</th><th>序列号</th><th>判定</th><th>不合格项</th><th class="r">Rc ℃/W</th><th class="r">T0−T1 ℃</th></tr></thead>
+            <thead><tr><th style="width: 36px"></th><th>结束时间</th><th>run_id</th><th>机台#槽位</th><th>序列号</th><th>判定</th><th>不合格项</th><th class="r">Rc ℃/W</th><th class="r">T0−T1 ℃</th></tr></thead>
             <tbody>
               <TransitionGroup name="row">
                 <tr v-for="r in stream" :key="r.run_id">
+                  <td><input type="checkbox" :checked="pickedRuns.includes(r.run_id)" :aria-label="`导出 ${r.serial_number || r.run_id}`" @change="toggleRun(r.run_id)" /></td>
                   <td class="num fs-sm">{{ hms(r.ended_at) }}</td>
                   <td class="mono fs-xs">{{ r.run_id }}</td>
                   <td class="mono">{{ r.machine_id }}#{{ r.slot_index }}</td>
@@ -605,7 +656,8 @@ onBeforeUnmount(() => {
     <Panel v-else flush>
       <div class="toolbar">
         <button class="btn btn-primary" :disabled="!reportBatches.length" @click="report(reportBatches)"><FileText :size="16" />打开批次报告（{{ reportBatches.length }}）</button>
-        <div class="input-wrap" style="width: 280px"><Search :size="14" /><input v-model="rf.kw" class="input" placeholder="run_id / 序列号" aria-label="搜索测试记录" /></div>
+        <div class="input-wrap" style="width: 280px"><Search :size="14" /><input v-model="rf.kw" class="input" placeholder="产品 id / 序列号" aria-label="搜索测试记录" /></div>
+        <span v-if="rf.batch" class="tag">批次 {{ rf.batch }} <button class="btn btn-ghost btn-sm" @click="clearBatch">清除</button></span>
         <select v-model="rf.machine" class="select" aria-label="机台">
           <option value="all">全部机台</option>
           <option v-for="m in machines" :key="m.machine_id" :value="m.machine_id">{{ m.machine_id }}</option>
@@ -614,13 +666,15 @@ onBeforeUnmount(() => {
           <button v-for="o in (['all', 'pass', 'fail', 'none'] as const)" :key="o" :aria-pressed="rf.passed === o" @click="rf.passed = o">{{ { all: '全部', pass: '合格', fail: '不合格', none: '中止 / 故障' }[o] }}</button>
         </div>
         <span class="grow" />
+        <button class="btn" :disabled="!pickedRuns.length || exporting" @click="exportPickedRaw"><Download :size="16" />导出过程数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
         <span class="fs-xs muted">显示最近 {{ runList.length }} 条</span>
       </div>
       <div class="table-wrap" style="max-height: calc(100vh - 300px)">
         <table class="table">
-          <thead><tr><th>结束时间</th><th>run_id</th><th>机台#槽位</th><th>序列号</th><th>方案</th><th>状态 / 判定</th><th>不合格项</th><th>结果行</th><th class="r">Rc</th><th class="r">T0−T1</th></tr></thead>
+          <thead><tr><th style="width: 36px"></th><th>结束时间</th><th>run_id</th><th>机台#槽位</th><th>序列号</th><th>方案</th><th>状态 / 判定</th><th>不合格项</th><th>结果行</th><th class="r">Rc</th><th class="r">T0−T1</th></tr></thead>
           <tbody>
             <tr v-for="r in runList" :key="r.run_id" class="clickable" :class="{ 'is-selected': selectedId === r.run_id }" @click="openRun(r.run_id)">
+              <td @click.stop><input type="checkbox" :checked="pickedRuns.includes(r.run_id)" :aria-label="`导出 ${r.serial_number || r.run_id}`" @change="toggleRun(r.run_id)" /></td>
               <td class="num fs-sm">{{ dt(r.ended_at) }}</td>
               <td class="mono fs-xs">{{ r.run_id }}</td>
               <td class="mono">{{ r.machine_id }}#{{ r.slot_index }}</td>
@@ -632,7 +686,7 @@ onBeforeUnmount(() => {
               <td class="r num">{{ r.rc?.toFixed(3) ?? '—' }}</td>
               <td class="r num">{{ r.dt01?.toFixed(3) ?? '—' }}</td>
             </tr>
-            <tr v-if="!runList.length"><td colspan="10" class="c muted" style="height: 80px">没有符合条件的测试记录</td></tr>
+            <tr v-if="!runList.length"><td colspan="11" class="c muted" style="height: 80px">没有符合条件的测试记录</td></tr>
           </tbody>
         </table>
       </div>
@@ -646,6 +700,7 @@ onBeforeUnmount(() => {
               <h2 class="mono">{{ selectedId }}</h2>
               <span class="fs-xs muted">判定结果、过程曲线、仿真真值</span>
             </div>
+            <button class="btn btn-sm" :disabled="exporting" @click="selectedId && exportOneRaw(selectedId)"><Download :size="14" />过程数据</button>
             <button class="btn btn-ghost btn-icon" v-tip="'关闭'" @click="selectedId = null"><X :size="18" /></button>
           </header>
           <div class="db">

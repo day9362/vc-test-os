@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,12 +27,28 @@ async def export_production_csv(
     batch_id: str | None = None,
     start: int | None = Query(default=None, alias="from"),
     end: int | None = Query(default=None, alias="to"),
+    group: str = "day",
     _: object = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    body = await RunService(session).export_csv(batch_id, start, end)
+    body, media, filename = await RunService(session).export_csv(batch_id, start, end, group)
+    return _file(body, media, filename)
+
+
+@router.get("/export/raw")
+async def export_raw(
+    run_id: list[str] = Query(default_factory=list),
+    batch_id: str | None = None,
+    _: object = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    body, media, filename = await RunService(session).export_raw(run_id, batch_id)
+    return _file(body, media, filename)
+
+
+def _file(body: bytes, media: str, filename: str) -> Response:
     return Response(
-        content=body.encode("utf-8-sig"),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="production.csv"'},
+        content=body,
+        media_type=media,
+        headers={"Content-Disposition": f"attachment; filename=\"{filename}\"; filename*=UTF-8''{quote(filename)}"},
     )
