@@ -11,6 +11,7 @@ class ReportFigureOrm(Base):
     batch_key: Mapped[str] = mapped_column(String(512), index=True)
     batch_ids: Mapped[list] = mapped_column(JSON, default=list)
     prompt: Mapped[str] = mapped_column(Text, default="")
+    preset: Mapped[str] = mapped_column(String(32), default="")
     status: Mapped[str] = mapped_column(String(16), default="running")
     title: Mapped[str] = mapped_column(String(80), default="")
     step: Mapped[str] = mapped_column(String(80), default="")

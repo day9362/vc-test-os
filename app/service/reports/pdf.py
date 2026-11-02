@@ -7,7 +7,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
 
-from app.models.dto.report import ReportDataOut
+import base64
+
+from app.models.dto.report import ExportBlock, ReportDataOut
 
 _FONT = "STSong-Light"
 pdfmetrics.registerFont(UnicodeCIDFont(_FONT))
@@ -22,6 +24,61 @@ class PdfFigure:
     results: list[tuple[str, str]]
     bars: list[tuple[str, float]]
     image: bytes | None = None
+
+
+def render_page_pdf(blocks: list[ExportBlock]) -> bytes:
+    buffer = BytesIO()
+    page = canvas.Canvas(buffer, pagesize=A4)
+    width, _height = A4
+    y = A4[1] - 48
+    for block in blocks[:120]:
+        kind = block.kind
+        if kind == "h1":
+            y = _text(page, width, y, block.text[:200], 16)
+        elif kind == "h2":
+            y = _text(page, width, y, block.text[:200], 13)
+        elif kind in {"text", "note"}:
+            y = _text(page, width, y, block.text[:2000], 10 if kind == "text" else 9)
+        elif kind == "image":
+            if block.title:
+                y = _text(page, width, y, block.title[:80], 11)
+            raw = _png_bytes(block.png)
+            if raw:
+                y = _image(page, width, y, raw)
+        elif kind == "table":
+            y = _table(page, width, y, block.title[:80], block.columns[:16], block.rows[:80])
+    page.save()
+    return buffer.getvalue()
+
+
+def _png_bytes(value: str) -> bytes | None:
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("data:"):
+        parts = text.split(",", 1)
+        text = parts[1] if len(parts) == 2 else ""
+    if not text or len(text) > 1_800_000:
+        return None
+    try:
+        raw = base64.b64decode(text, validate=False)
+    except Exception:
+        return None
+    return raw if raw.startswith(b"\x89PNG") else None
+
+
+def _table(page: canvas.Canvas, width: float, y: float, title: str, columns: list[str], rows: list[list[str]]) -> float:
+    if title:
+        y = _text(page, width, y, title, 12)
+    if not rows:
+        return y
+    for row in rows:
+        pairs = []
+        for index, cell in enumerate(row[: len(columns) or len(row)]):
+            label = columns[index] if index < len(columns) else ""
+            pairs.append(f"{label} {cell}".strip())
+        y = _text(page, width, y, "  ".join(pairs), 8)
+    return y
 
 
 def render_report_pdf(data: ReportDataOut, summary_lines: list[str] | None = None, figures: list[PdfFigure] | None = None) -> bytes:
@@ -56,8 +113,12 @@ def render_report_pdf(data: ReportDataOut, summary_lines: list[str] | None = Non
         for item in data.machine_yield
     ]
     y = _bars(page, width, y, "机台良率", yields, 100, "%")
-    hist = _histogram_bars(data)
-    y = _bars(page, width, y, "Rc 分布", hist, max((value for _, value in hist), default=1), "")
+    ambient = [(item.serial.rsplit("-", 1)[-1], item.value) for item in data.ambient if item.value is not None]
+    if ambient:
+        y = _bars(page, width, y, "室温", ambient, max(value for _, value in ambient), "℃")
+    else:
+        hist = _histogram_bars(data)
+        y = _bars(page, width, y, "Rc 分布", hist, max((value for _, value in hist), default=1), "")
     pareto = [(item.item, item.count) for item in data.fail_pareto[:8]]
     y = _bars(page, width, y, "不合格项", pareto, max((value for _, value in pareto), default=1), "")
     if len(data.compare) > 1:
@@ -90,6 +151,15 @@ def _histogram_bars(data: ReportDataOut) -> list[tuple[str, float]]:
 def chart_bars(option: dict | None) -> list[tuple[str, float]]:
     if not isinstance(option, dict):
         return []
+    panels = option.get("panels")
+    if isinstance(panels, list):
+        rows: list[tuple[str, float]] = []
+        for panel in panels:
+            if isinstance(panel, dict):
+                rows.extend(chart_bars(panel.get("option")))
+            if len(rows) >= 24:
+                return rows[:24]
+        return rows
     series = option.get("series") or []
     if isinstance(series, dict):
         series = [series]
@@ -109,8 +179,9 @@ def chart_bars(option: dict | None) -> list[tuple[str, float]]:
         if not isinstance(data, list):
             continue
         name = str(item.get("name") or "").strip()
+        heatmap = item.get("type") == "heatmap"
         for index, value in enumerate(data):
-            number = _number(value)
+            number = _heatmap_value(value) if heatmap else _number(value)
             if number is None:
                 continue
             label = str(labels[index]) if index < len(labels) else str(index + 1)
@@ -120,6 +191,12 @@ def chart_bars(option: dict | None) -> list[tuple[str, float]]:
             if len(rows) >= 24:
                 return rows
     return rows
+
+
+def _heatmap_value(value: object) -> float | None:
+    if isinstance(value, list) and value:
+        return _number(value[-1])
+    return _number(value)
 
 
 def _number(value: object) -> float | None:

@@ -103,6 +103,38 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export async function apiDownload(path: string): Promise<{ blob: Blob; filename: string }> {
+  const token = currentToken()
+  if (!token) {
+    goLogin()
+    throw new Error('未登录')
+  }
+  const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+  if (res.status === 401) {
+    clearSession()
+    goLogin()
+  }
+  if (!res.ok) throw new Error(await errorMessage(res))
+  return { blob: await res.blob(), filename: filenameFrom(res.headers.get('Content-Disposition')) }
+}
+
+function filenameFrom(header: string | null): string {
+  if (!header) return 'download'
+  const starred = /filename\*=UTF-8''([^;]+)/i.exec(header)
+  if (starred) return decodeURIComponent(starred[1])
+  const plain = /filename="?([^";]+)"?/i.exec(header)
+  return plain?.[1] || 'download'
+}
+
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export async function apiBlob(path: string): Promise<Blob> {
   const token = currentToken()
   if (!token) {

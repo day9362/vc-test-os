@@ -9,6 +9,7 @@ _FENCE = re.compile(r"```vc-choices\s*([\s\S]*?)```", re.IGNORECASE)
 _ROW_LIMIT = 20
 _TABLE_MIN = 6
 _POINT_LIMIT = 80
+_RECORD_LIMIT = 8
 _FILE_LIMIT = 8_000_000
 
 _TABLES = {
@@ -37,13 +38,17 @@ def present_cards(name: str, result_text: str, *, roots: list[Path] | None = Non
     payload = _payload(envelope, roots if roots is not None else result_roots())
     if not isinstance(payload, dict):
         return []
+    cards = []
     chart = _chart(payload)
     if chart is not None:
-        return [chart]
+        cards.append(chart)
     table = _table(payload)
     if table is not None:
-        return [table]
-    return []
+        cards.append(table)
+    records = _records(payload)
+    if records is not None:
+        cards.append(records)
+    return cards
 
 
 def extract_choices(text: str) -> tuple[str, dict | None]:
@@ -59,9 +64,14 @@ def extract_choices(text: str) -> tuple[str, dict | None]:
 
 def _payload(envelope: dict, roots: list[Path]) -> Any:
     full_file = envelope.get("full_file")
-    if not isinstance(full_file, str) or not full_file.strip():
-        return None
-    return _load(full_file.strip(), roots)
+    if isinstance(full_file, str) and full_file.strip():
+        loaded = _load(full_file.strip(), roots)
+        if loaded is not None:
+            return loaded
+    data = envelope.get("data")
+    if isinstance(data, dict):
+        return data
+    return None
 
 
 def _load(full_file: str, roots: list[Path]) -> Any:
@@ -114,6 +124,61 @@ def _table(payload: dict) -> dict | None:
             "more": max(len(rows) - len(kept), 0),
         }
     return None
+
+
+def _records(payload: dict) -> dict | None:
+    items: list[dict] = []
+    run = payload.get("run")
+    if isinstance(run, dict) and run.get("run_id"):
+        items.append(_record_item(run))
+    rows = payload.get("runs")
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and row.get("run_id"):
+                items.append(_record_item(row))
+    if not items and "runs" not in payload and "run" not in payload:
+        batches = payload.get("batches")
+        if isinstance(batches, list):
+            for row in batches:
+                if isinstance(row, dict) and row.get("batch_id"):
+                    items.append(_batch_item(row))
+        elif payload.get("batch_id"):
+            items.append(_batch_item(payload))
+    if not items:
+        return None
+    return {
+        "type": "records",
+        "id": f"rec-{uuid4().hex[:8]}",
+        "items": items[:_RECORD_LIMIT],
+        "more": max(len(items) - _RECORD_LIMIT, 0),
+    }
+
+
+def _record_item(row: dict) -> dict:
+    serial = str(row.get("serial_number") or "")
+    batch = str(row.get("batch_id") or "")
+    label = serial or str(row.get("run_id") or "")
+    if batch:
+        label = f"{batch} · {label}"
+    return {
+        "run_id": str(row.get("run_id") or ""),
+        "serial_number": serial,
+        "batch_id": batch,
+        "ended_at": int(row.get("ended_at") or 0),
+        "label": label,
+    }
+
+
+def _batch_item(row: dict) -> dict:
+    batch = str(row.get("batch_id") or "")
+    model = str(row.get("model") or "")
+    return {
+        "run_id": "",
+        "serial_number": "",
+        "batch_id": batch,
+        "ended_at": 0,
+        "label": f"{batch} · {model}" if model else batch,
+    }
 
 
 def _chart(payload: dict) -> dict | None:

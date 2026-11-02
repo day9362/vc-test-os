@@ -24,7 +24,7 @@ async def create_figure(
     user: UserEntity = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> FigureCreatedOut:
-    created = await FigureService(session).create(body.batch_ids, body.prompt, user)
+    created = await FigureService(session).create(body.batch_ids, body.prompt, user, body.preset)
     background.add_task(execute_figure, created.figure_id, user.name)
     return created
 

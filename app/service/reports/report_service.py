@@ -10,6 +10,7 @@ from app.core.clock import now_ms
 from app.core.config import settings
 from app.core.errors import AppError
 from app.models.dto.report import (
+    AmbientPointOut,
     BatchCompareOut,
     BatchStatOut,
     DeltaProfileOut,
@@ -30,9 +31,10 @@ from app.models.orm.report_narrative import ReportNarrativeOrm
 from app.models.orm.run import RunOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
+from app.service.reports.analysis_math import item_sort_key, usable
 from app.service.reports.figures import batch_key
-from app.service.reports.narrative import grounded_lines, request_summary
-from app.service.reports.pdf import PdfFigure, chart_bars, render_report_pdf
+from app.service.reports.narrative import grounded_lines, polish_summary_lines, request_summary, unify_words
+from app.service.reports.pdf import PdfFigure, chart_bars, render_page_pdf, render_report_pdf
 from app.service.reports.store import reports_dir, save_report_pdf
 from app.service.runs.cluster_ingest import fleet_machine_ids
 from app.service.runs.run_service import RunService
@@ -97,8 +99,9 @@ class ReportService:
                 for machine_id, items in sorted(machines.items())
             ],
             rc_histogram=_histogram({batch_id: grouped.get(batch_id, []) for batch_id in ids if grouped.get(batch_id)}),
+            ambient=_ambient_series({batch_id: grouped.get(batch_id, []) for batch_id in ids if grouped.get(batch_id)}),
             fail_pareto=_pareto(used),
-            delta_profile=_deltas({batch_id: grouped.get(batch_id, []) for batch_id in ids if grouped.get(batch_id)}, len(active) == 1),
+            delta_profile=await _delta_profile(self.session, {batch_id: grouped.get(batch_id, []) for batch_id in ids if grouped.get(batch_id)}, len(active) == 1),
             compare=[BatchCompareOut(batch_id=item.batch_id, yield_rate=round(100 * item.passed / item.tested, 2), rc_mean=item.rc_mean) for item in active],
         )
 
@@ -106,11 +109,13 @@ class ReportService:
         ids = [item.strip() for item in batch_ids if item and item.strip()]
         if not ids:
             raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
-        data = await self.data(",".join(ids))
-        if not any(item.tested > 0 for item in data.batches):
-            raise AppError(400, "BAD_REQUEST", "所选批次还没有测完的片子")
-        payload = data.model_dump(mode="json")
-        payload["batch_count"] = sum(1 for item in data.batches if item.tested > 0)
+        from app.service.reports.analysis_service import AnalysisService
+
+        analysis = await AnalysisService(self.session).build(ids)
+        if analysis.note and not analysis.overall.items:
+            raise AppError(400, "BAD_REQUEST", analysis.note)
+        payload = analysis.model_dump(mode="json")
+        payload["batch_count"] = len(analysis.batches)
         started = now_ms()
         from app.service.settings.model import configured_model
 
@@ -152,7 +157,7 @@ class ReportService:
         row = await self._latest_narrative(ids)
         if row is None:
             return ReportNarrativeOut(lines=[], model="", usage=ReportUsageOut(input=0, output=0))
-        return ReportNarrativeOut(lines=list(row.lines or []), model=row.model, usage=ReportUsageOut(input=0, output=0))
+        return ReportNarrativeOut(lines=polish_summary_lines([unify_words(line) for line in list(row.lines or [])]), model=row.model, usage=ReportUsageOut(input=0, output=0))
 
     async def export(self, body: ReportExportIn, user: UserEntity, idempotency_key: str | None) -> ReportExportOut:
         cached = await self._cached(idempotency_key)
@@ -164,13 +169,18 @@ class ReportService:
         fmt = (body.format or "pdf").strip().lower()
         if fmt != "pdf":
             raise AppError(422, "VALIDATION_ERROR", "目前仅支持 format=pdf")
-        data = await self.data(",".join(ids))
-        lines = _clean_lines(body.summary_lines)
-        if not lines:
-            saved = await self._latest_narrative(ids)
-            lines = _clean_lines(list(saved.lines or []) if saved is not None else [])
-        figures, included = await self._export_figures(ids, body.figure_ids)
-        pdf = render_report_pdf(data, lines, figures)
+        if body.blocks:
+            pdf = render_page_pdf(body.blocks)
+            included: list[str] = []
+            lines = [block.text for block in body.blocks if block.kind in {"h1", "h2", "text"} and block.text]
+        else:
+            data = await self.data(",".join(ids))
+            lines = polish_summary_lines([unify_words(line) for line in _clean_lines(body.summary_lines)])
+            if not lines:
+                saved = await self._latest_narrative(ids)
+                lines = polish_summary_lines([unify_words(line) for line in _clean_lines(list(saved.lines or []) if saved is not None else [])])
+            figures, included = await self._export_figures(ids, body.figure_ids)
+            pdf = render_report_pdf(data, lines, figures)
         url = save_report_pdf(pdf)
         self.audit.record(
             user.user_id,
@@ -261,6 +271,7 @@ def _empty(batches: list[BatchStatOut]) -> ReportDataOut:
         summary=ReportSummaryOut(tested=0, passed=0, failed=0, aborted=0, yield_rate=0, rc_mean=0, rc_sd=0, cpk_t01=0, usl_t01=USL_T01, machine_count=0),
         machine_yield=[],
         rc_histogram=RcHistogramOut(edges=[], counts={}),
+        ambient=[],
         fail_pareto=[],
         delta_profile=DeltaProfileOut(items=[], mean={}, p95=None, limit=[]),
         compare=[],
@@ -324,7 +335,7 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
 
 
 def _histogram(grouped: dict[str, list[RunOrm]]) -> RcHistogramOut:
-    values = [float(row.rc) for rows in grouped.values() for row in rows if row.rc is not None]
+    values = [value for rows in grouped.values() for row in rows if (value := _ambient(row)) is not None]
     if not values:
         return RcHistogramOut(edges=[], counts={})
     lo = min(values) - 0.05
@@ -337,9 +348,10 @@ def _histogram(grouped: dict[str, list[RunOrm]]) -> RcHistogramOut:
     for batch_id, rows in grouped.items():
         bins = [0] * BINS
         for row in rows:
-            if row.rc is None:
+            value = _ambient(row)
+            if value is None:
                 continue
-            index = int((float(row.rc) - lo) / width)
+            index = int((value - lo) / width)
             if index < 0:
                 index = 0
             if index >= BINS:
@@ -347,6 +359,58 @@ def _histogram(grouped: dict[str, list[RunOrm]]) -> RcHistogramOut:
             bins[index] += 1
         counts[batch_id] = bins
     return RcHistogramOut(edges=edges, counts=counts)
+
+
+def _ambient_series(grouped: dict[str, list[RunOrm]]) -> list[AmbientPointOut]:
+    points: list[AmbientPointOut] = []
+    for batch_id, rows in grouped.items():
+        for row in rows:
+            value = _ambient(row)
+            t01 = _t01(row)
+            if value is None and t01 is None:
+                continue
+            points.append(AmbientPointOut(
+                batch_id=batch_id,
+                serial=row.serial_number or row.run_id,
+                ended_at=int(row.ended_at or 0),
+                machine_id=row.machine_id or "",
+                slot_index=int(row.slot_index or 0),
+                value=None if value is None else round(value, 3),
+                t01=None if t01 is None else round(t01, 3),
+            ))
+    points.sort(key=lambda item: (item.ended_at, item.serial))
+    return points
+
+
+def _t01(row: RunOrm) -> float | None:
+    result = row.result if isinstance(row.result, dict) else {}
+    deltas = result.get("deltas") or {}
+    if isinstance(deltas, dict):
+        value = deltas.get("Temp_T0-T1")
+        if isinstance(value, (int, float)):
+            return float(value)
+    if isinstance(row.dt01, (int, float)):
+        return float(row.dt01)
+    return None
+
+
+def _ambient(row: RunOrm) -> float | None:
+    result = row.result if isinstance(row.result, dict) else {}
+    deltas = result.get("deltas") or {}
+    if isinstance(deltas, dict):
+        for key in ("Temp_Ta", "Ta", "temp_ambient"):
+            value = deltas.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+    for item in result.get("temps") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("channel") or item.get("item") or "").lower()
+        if name in {"ta", "t_a", "ambient"}:
+            value = item.get("value")
+            if isinstance(value, (int, float)):
+                return float(value)
+    return None
 
 
 def _pareto(rows: list[RunOrm]) -> list[FailParetoOut]:
@@ -360,32 +424,65 @@ def _pareto(rows: list[RunOrm]) -> list[FailParetoOut]:
             continue
         for item in items:
             counts[str(item)] += 1
-    return [FailParetoOut(item=item, count=count) for item, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))]
+    return [FailParetoOut(item=item, count=count) for item, count in sorted(counts.items(), key=lambda pair: (-pair[1], item_sort_key(pair[0])))]
 
 
-def _deltas(grouped: dict[str, list[RunOrm]], single: bool) -> DeltaProfileOut:
-    keys: set[str] = set()
-    for rows in grouped.values():
-        for row in rows:
-            for key in (row.result or {}).get("deltas") or {}:
-                if key != "Rc":
-                    keys.add(str(key))
-    items = sorted(keys)
-    mean: dict[str, list[float]] = {}
-    for batch_id, rows in grouped.items():
-        mean[batch_id] = [_mean(_delta_values(rows, key)) for key in items]
-    p95 = [_p95(_delta_values(next(iter(grouped.values())), key)) for key in items] if single and grouped else None
-    limit = [USL_T01 if key == "Temp_T0-T1" else None for key in items]
+async def _delta_profile(session: AsyncSession, grouped: dict[str, list[RunOrm]], single: bool) -> DeltaProfileOut:
+    from app.service.reports.analysis_service import AnalysisService
+
+    rows = [row for batch in grouped.values() for row in batch]
+    return _delta_profile_from(grouped, await AnalysisService(session)._limits(rows), single)
+
+
+def _delta_profile_from(grouped: dict[str, list[RunOrm]], limits: dict, single: bool) -> DeltaProfileOut:
+    from app.service.reports.analysis_service import _measured
+
+    rows = [row for batch in grouped.values() for row in batch]
+    needed = {(row.plan_id, int(row.plan_version or 0)) for row in rows if row.plan_id}
+    catalog: dict[str, dict] = {}
+    for key in needed:
+        for measure, (name, _low, high) in (limits.get(key) or {}).items():
+            if not str(measure).startswith("delta_"):
+                continue
+            slot = catalog.setdefault(str(measure), {"name": name, "highs": []})
+            slot["name"] = name
+            if isinstance(high, (int, float)) and not isinstance(high, bool):
+                slot["highs"].append(float(high))
+    measures = sorted(catalog, key=lambda measure: item_sort_key(catalog[measure]["name"]))
+    items = [catalog[measure]["name"] for measure in measures]
+    limit = [_agreed(catalog[measure]["highs"]) for measure in measures]
+    mean = {batch_id: [_average(_readings(batch, measure, _measured)) for measure in measures] for batch_id, batch in grouped.items()}
+    p95 = [_percentile(_readings(next(iter(grouped.values())), measure, _measured)) for measure in measures] if single and grouped else None
     return DeltaProfileOut(items=items, mean=mean, p95=p95, limit=limit)
 
 
-def _delta_values(rows: list[RunOrm], key: str) -> list[float]:
+def _readings(rows: list[RunOrm], measure: str, measured) -> list[float]:
     values = []
     for row in rows:
-        raw = ((row.result or {}).get("deltas") or {}).get(key)
-        if isinstance(raw, (int, float)):
+        raw = measured(row).get(measure)
+        if raw is not None and usable(raw):
             values.append(float(raw))
     return values
+
+
+def _agreed(values: list[float]) -> float | None:
+    if not values or any(value != values[0] for value in values):
+        return None
+    return values[0]
+
+
+def _average(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 3)
+
+
+def _percentile(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round(0.95 * (len(ordered) - 1)))))
+    return round(ordered[index], 3)
 
 
 def _mean(values: list[float]) -> float:
@@ -399,9 +496,3 @@ def _sd(values: list[float]) -> float:
     return sqrt(sum((value - avg) ** 2 for value in values) / len(values))
 
 
-def _p95(values: list[float]) -> float:
-    if not values:
-        return 0
-    ordered = sorted(values)
-    index = min(len(ordered) - 1, max(0, int(round(0.95 * (len(ordered) - 1)))))
-    return round(ordered[index], 3)

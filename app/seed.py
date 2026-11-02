@@ -55,6 +55,13 @@ ACCOUNTS = (
 )
 
 
+async def ensure_figure_preset_column() -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS preset VARCHAR(32) NOT NULL DEFAULT ''"
+        ))
+
+
 async def ensure_user_tenant_column() -> None:
     async with engine.begin() as conn:
         await conn.execute(text(

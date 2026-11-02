@@ -2,11 +2,11 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowUp, BarChart3, Bot, Check, ChevronRight, Database, FileCode2, Loader2, Plus, ShieldCheck, Sparkles, SquareTerminal, User, Wrench, X,
+  ArrowUp, BarChart3, Bot, Check, ChevronRight, Database, Download, Eye, FileCode2, Loader2, Plus, ShieldCheck, Sparkles, SquareTerminal, User, Wrench, X,
 } from 'lucide-vue-next'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
-import { api, currentToken } from '@/api/http'
+import { api, apiDownload, currentToken, saveBlob } from '@/api/http'
 import type { BatchStat } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { hms } from '@/utils/format'
@@ -20,8 +20,11 @@ type Block =
   | { type: 'table'; id: string; title: string; columns: string[]; rows: string[][]; more: number }
   | { type: 'chart'; id: string; title: string; option: Record<string, any> }
   | { type: 'choices'; id: string; options: { label: string; text: string }[]; chosen: number | null }
+  | { type: 'records'; id: string; items: RecordLink[]; more: number }
   | { type: 'plan'; plan_id: string; name: string; fields: [string, string][] }
   | { type: 'action'; id: string; name: string; desc: string; arguments: Record<string, any>; status: 'pending' | 'done' | 'rejected' | 'expired'; result: string; risk: 'low' | 'medium' | 'high' }
+interface RecordLink { run_id: string; serial_number: string; batch_id: string; ended_at: number; label: string }
+interface RecordView { columns: string[]; rows: string[][]; chart: Record<string, any> | null; note: string }
 interface Msg { id: number; role: 'user' | 'agent'; text: string; blocks: Block[]; module?: string; tokens?: [number, number]; time: number; live?: boolean }
 
 const CAPS = [
@@ -34,6 +37,9 @@ let mid = 0
 const input = ref('')
 const busy = ref(false)
 const acting = ref('')
+const asking = ref('')
+const viewing = ref('')
+const recordViews = ref<Record<string, RecordView>>({})
 const scroller = ref<HTMLElement>()
 const viewKey = ref(0)
 const scope = ref({ model: '', batches: [] as string[], machines: [] as string[] })
@@ -213,6 +219,7 @@ async function readReply(sid: string, text: string, live: Msg, module: AgentModu
         action?: Extract<Block, { type: 'action' }>
         table?: Extract<Block, { type: 'table' }>
         chart?: Extract<Block, { type: 'chart' }>
+        records?: Extract<Block, { type: 'records' }>
       }
       if (payload.type === 'text' && payload.text) live.text += payload.text
       if (payload.type === 'tool' && payload.id) {
@@ -231,7 +238,7 @@ async function readReply(sid: string, text: string, live: Msg, module: AgentModu
       if (payload.type === 'action' && payload.action?.id && !live.blocks.some((item) => item.type === 'action' && item.id === payload.action?.id)) {
         live.blocks.push(payload.action)
       }
-      const shown = payload.type === 'table' ? payload.table : payload.type === 'chart' ? payload.chart : undefined
+      const shown = payload.type === 'table' ? payload.table : payload.type === 'chart' ? payload.chart : payload.type === 'records' ? payload.records : undefined
       if (shown?.id && !live.blocks.some((item) => 'id' in item && item.id === shown.id)) live.blocks.push(shown)
       if (payload.type === 'done' && payload.message && typeof payload.message !== 'string') {
         live.text = payload.message.text || live.text
@@ -310,6 +317,94 @@ async function settle(b: Extract<Block, { type: 'action' }>, decision: 'approve'
 function approvalExpired(text: string) {
   return text.includes('已经过期或已经执行过')
 }
+function recordKey(blockId: string, item: RecordLink) {
+  return `${blockId}:${item.run_id || item.batch_id}`
+}
+
+function jumpRecord(item: RecordLink) {
+  const query: Record<string, string> = { tab: 'runs' }
+  if (item.run_id) query.r = item.run_id
+  if (item.serial_number) query.q = item.serial_number
+  if (item.batch_id) query.batch = item.batch_id
+  router.push({ path: '/testing', query })
+}
+
+async function viewRecord(blockId: string, item: RecordLink) {
+  const key = recordKey(blockId, item)
+  if (viewing.value === key) {
+    viewing.value = ''
+    return
+  }
+  viewing.value = key
+  if (recordViews.value[key]) return
+  try {
+    if (item.run_id) {
+      const run = await api<Record<string, any>>(`/runs/${encodeURIComponent(item.run_id)}`)
+      const samples = await api<{ points?: { t_s: number; T0: number; T1: number; Ta: number; power_w?: number }[]; duration_s?: number }>(`/runs/${encodeURIComponent(item.run_id)}/samples`)
+      const points = samples.points || []
+      recordViews.value[key] = {
+        note: `${run.serial_number || item.run_id} · ${run.passed === true ? 'pass' : run.passed === false ? 'fail' : run.status || ''} · 采样 ${points.length} 点${samples.duration_s ? ` · 方案时长 ${samples.duration_s}s` : ''}`,
+        columns: ['序列号', '批次', '机台', '判定', '不合格项', '热阻', 'T0-T1'],
+        rows: [[
+          String(run.serial_number || '—'),
+          String(run.batch_id || '—'),
+          `${run.machine_id || '—'}#${run.slot_index ?? '—'}`,
+          run.passed === true ? 'pass' : run.passed === false ? 'fail' : String(run.status || '—'),
+          (run.fail_items || []).join(';') || '—',
+          run.rc == null ? '—' : String(run.rc),
+          run.dt01 == null ? '—' : String(run.dt01),
+        ]],
+        chart: points.length ? {
+          grid: { left: 40, right: 12, top: 28, bottom: 24 },
+          legend: { data: ['T0', 'T1', 'Ta'] },
+          xAxis: { type: 'category', data: points.map((point) => `${point.t_s.toFixed(1)}s`) },
+          yAxis: { type: 'value', name: '℃', scale: true },
+          series: [
+            { name: 'T0', type: 'line', data: points.map((point) => point.T0), showSymbol: false },
+            { name: 'T1', type: 'line', data: points.map((point) => point.T1), showSymbol: false },
+            { name: 'Ta', type: 'line', data: points.map((point) => point.Ta), showSymbol: false },
+          ],
+        } : null,
+      }
+    } else if (item.batch_id) {
+      const page = await api<{ items: Record<string, any>[] }>(`/runs?batch_id=${encodeURIComponent(item.batch_id)}&limit=50`)
+      recordViews.value[key] = {
+        note: `${item.batch_id} · ${page.items.length} 片`,
+        columns: ['序列号', '机台', '判定', '热阻'],
+        rows: page.items.map((run) => [
+          String(run.serial_number || run.run_id),
+          `${run.machine_id}#${run.slot_index}`,
+          run.passed === true ? 'pass' : run.passed === false ? 'fail' : String(run.status || '—'),
+          run.rc == null ? '—' : String(run.rc),
+        ]),
+        chart: null,
+      }
+    }
+  } catch (err) {
+    viewing.value = ''
+    app.toast({ kind: 'danger', title: '没有打开测试数据', desc: err instanceof Error ? err.message : '没有打开测试数据' })
+  }
+}
+
+async function exportRecord(item: RecordLink, kind: 'raw' | 'batch') {
+  asking.value = ''
+  const path = kind === 'raw'
+    ? (item.run_id ? `/export/raw?run_id=${encodeURIComponent(item.run_id)}` : `/export/raw?batch_id=${encodeURIComponent(item.batch_id)}`)
+    : `/export/production.csv?group=batch&batch_id=${encodeURIComponent(item.batch_id)}`
+  if (kind === 'batch' && !item.batch_id) {
+    app.toast({ kind: 'danger', title: '这片记录没有批次' })
+    return
+  }
+  if (kind === 'raw' && !item.run_id && !item.batch_id) return
+  try {
+    const file = await apiDownload(path)
+    saveBlob(file.blob, file.filename)
+    app.toast({ kind: 'ok', title: kind === 'raw' ? '已导出过程数据' : '已导出本批结果', desc: file.filename })
+  } catch (err) {
+    app.toast({ kind: 'danger', title: '导出失败', desc: err instanceof Error ? err.message : '导出失败' })
+  }
+}
+
 function isExpired(block: Extract<Block, { type: 'action' }>) {
   return block.status === 'expired' || (block.status === 'pending' && approvalExpired(block.result || ''))
 }
@@ -442,6 +537,32 @@ onMounted(() => {
               <div v-else-if="b.type === 'chart'" class="card">
                 <div class="ch"><BarChart3 :size="14" />{{ b.title }}</div>
                 <EChart :option="b.option" :height="220" />
+              </div>
+              <div v-else-if="b.type === 'records'" class="card">
+                <div class="ch"><Database :size="14" />测试数据<span class="grow" /><span v-if="b.more" class="mono muted">还有 {{ b.more }} 片，用跳转去记录里选</span></div>
+                <div v-for="item in b.items" :key="item.run_id || item.batch_id" class="rec">
+                  <span class="mono grow">{{ item.label }}</span>
+                  <button class="btn btn-sm" @click="viewRecord(b.id, item)"><Eye :size="14" />查看</button>
+                  <button class="btn btn-sm" @click="jumpRecord(item)"><ChevronRight :size="14" />跳转</button>
+                  <button class="btn btn-sm" @click="asking = asking === recordKey(b.id, item) ? '' : recordKey(b.id, item)"><Download :size="14" />导出</button>
+                  <div v-if="asking === recordKey(b.id, item)" class="ask">
+                    <span class="fs-xs muted">{{ item.run_id ? '过程数据是这一片的采样。本批数据是这一批每片一行的结果。' : '过程数据按片分成多个文件。本批数据是这一批每片一行的结果。' }}</span>
+                    <button class="btn btn-sm btn-primary" @click="exportRecord(item, 'raw')">过程数据</button>
+                    <button class="btn btn-sm" :disabled="!item.batch_id" @click="exportRecord(item, 'batch')">本批数据</button>
+                  </div>
+                  <div v-if="viewing === recordKey(b.id, item) && recordViews[recordKey(b.id, item)]" class="seen">
+                    <p class="fs-xs muted">{{ recordViews[recordKey(b.id, item)].note }}</p>
+                    <div class="sheet">
+                      <table class="data">
+                        <thead><tr><th v-for="column in recordViews[recordKey(b.id, item)].columns" :key="column">{{ column }}</th></tr></thead>
+                        <tbody>
+                          <tr v-for="(row, rowIndex) in recordViews[recordKey(b.id, item)].rows" :key="rowIndex"><td v-for="(cell, cellIndex) in row" :key="cellIndex" class="mono">{{ cell }}</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <EChart v-if="recordViews[recordKey(b.id, item)].chart" :option="recordViews[recordKey(b.id, item)].chart" :height="200" />
+                  </div>
+                </div>
               </div>
             </template>
             <div v-if="m.live && !m.text && !m.blocks.length" class="row fs-sm muted"><Loader2 :size="14" class="spin" />正在通过 MCP 操作测试机…</div>
@@ -581,6 +702,9 @@ onMounted(() => {
 .data { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
 .data th, .data td { padding: 4px 8px; border-bottom: var(--bw) solid var(--c-border); text-align: left; white-space: nowrap; }
 .choices { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; }
+.rec { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: var(--bw) solid var(--c-border); }
+.rec .ask, .rec .seen { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.rec .seen { flex-direction: column; align-items: stretch; }
 .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--c-border); }
 .kv div { display: flex; flex-direction: column; padding: 6px 10px; background: var(--c-surface); font-size: var(--fs-xs); color: var(--c-text-3); }
 .kv b { color: var(--c-text); font-size: var(--fs-sm); }

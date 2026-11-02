@@ -1,20 +1,24 @@
 import asyncio
-import csv
 import io
 import logging
+import zipfile
 from time import monotonic
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.errors import AppError
 from app.models.dto.run import RunDetailOut, RunGroundTruthOut, RunPageOut, RunSamplesOut
+from app.models.orm.production import BatchRecordOrm
+from app.models.orm.test_plan import TestPlanOrm
 from app.repo.run_repo import RunRepo
 from app.repo.settings_repo import SettingsRepo
-from app.service.runs.cluster_ingest import fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
+from app.service.runs.cluster_ingest import _get, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
+from app.service.runs.result_csv import build_result_export, points_from_body, raw_filename, render_raw, unique_names
 
 log = logging.getLogger(__name__)
 _last_ingest = 0.0
@@ -156,34 +160,66 @@ class RunService:
             return
         loop.create_task(_ingest_in_background())
 
-    async def export_csv(self, batch_id: str | None, start: int | None, end: int | None) -> str:
+    async def export_csv(self, batch_id: str | None, start: int | None, end: int | None, group: str = "day") -> tuple[bytes, str, str]:
+        if group not in {"day", "batch"}:
+            raise AppError(400, "BAD_REQUEST", "group 只能是 day 或 batch")
         await self._ensure_fleet()
         self._schedule_ingest()
         rows = await self.runs.list_for_export(batch_id, start, end, bool(settings.cluster_base_url), fleet_machine_ids() or None)
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow([
-            "run_id", "machine_id", "slot_index", "serial_number", "plan_id", "plan_version",
-            "status", "passed", "fail_items", "keep_result", "rc", "dt01", "batch_id", "ended_at",
-        ])
+        return build_result_export(rows, await self._batch_models(), await self._plan_durations(), group)
+
+    async def export_raw(self, run_ids: list[str], batch_id: str | None) -> tuple[bytes, str, str]:
+        await self._ensure_fleet()
+        fleet = fleet_machine_ids()
+        rows = []
+        if run_ids:
+            for run_id in dict.fromkeys(run_ids):
+                row = await self.runs.get(run_id)
+                if row is None or (fleet and row.machine_id not in fleet):
+                    raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
+                rows.append(row)
+        elif batch_id:
+            rows = await self.runs.list_for_export(batch_id, None, None, bool(settings.cluster_base_url), fleet or None)
+        if not rows:
+            raise AppError(400, "BAD_REQUEST", "先选择要导出的测试记录")
+        if len(rows) > 200:
+            raise AppError(400, "BAD_REQUEST", "一次最多导出 200 片过程数据")
+        files = []
         for row in rows:
-            writer.writerow([
-                row.run_id,
-                row.machine_id,
-                row.slot_index,
-                row.serial_number or "",
-                row.plan_id,
-                row.plan_version,
-                row.status,
-                "" if row.passed is None else str(row.passed).lower(),
-                "|".join(row.fail_items or []),
-                str(row.keep_result).lower(),
-                "" if row.rc is None else row.rc,
-                "" if row.dt01 is None else row.dt01,
-                row.batch_id or "",
-                row.ended_at,
-            ])
-        return buffer.getvalue()
+            text = render_raw(await self._raw_points(row.run_id))
+            files.append((raw_filename(row.batch_id, row.serial_number, row.ended_at, row.run_id), text))
+        files = unique_names(files)
+        if len(files) == 1:
+            name, text = files[0]
+            return text.encode("utf-8-sig"), "text/csv; charset=utf-8", name
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for name, text in files:
+                archive.writestr(name, text.encode("utf-8-sig"))
+        return buffer.getvalue(), "application/zip", "rawdata.zip"
+
+    async def _raw_points(self, run_id: str) -> list[dict]:
+        if settings.cluster_base_url:
+            try:
+                body = await asyncio.to_thread(_get, f"/runs/{run_id}/samples")
+            except Exception:
+                body = None
+            points = points_from_body(body)
+            if points:
+                return points
+        samples = await self.runs.samples(run_id, None, None)
+        return [
+            {"t_s": item.t_s, "temp_t0": item.t0, "temp_t1": item.t1, "temp_ambient": item.ta, "power_w": item.power_w}
+            for item in samples
+        ]
+
+    async def _batch_models(self) -> dict[str, str]:
+        found = await self.session.execute(select(BatchRecordOrm.batch_id, BatchRecordOrm.model))
+        return {batch_id: model or "" for batch_id, model in found.all()}
+
+    async def _plan_durations(self) -> dict[tuple[str, int], int]:
+        found = await self.session.execute(select(TestPlanOrm.plan_id, TestPlanOrm.version, TestPlanOrm.duration_s))
+        return {(plan_id, int(version)): int(duration) for plan_id, version, duration in found.all()}
 
     async def export_with_limits(self, plan_id: str, version: int | None, batch_id: str | None) -> dict:
         from app.repo.production_repo import ProductionRepo
