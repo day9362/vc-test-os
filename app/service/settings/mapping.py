@@ -2,6 +2,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import settings
 from app.models.dto.settings import PlatformSettingsOut
+from app.service.settings.cluster_policy import clamp_retries, clamp_timeout
 from app.service.settings.model import shared_model
 from app.models.entity.settings import (
     AiSettings,
@@ -48,8 +49,8 @@ def settings_entity(payload: dict, updated_at: int) -> PlatformSettings:
         cluster=ClusterSettings(
             base_url=cluster.get("base_url") or "",
             token=cluster.get("token") or "",
-            timeout_s=cluster.get("timeout_s") or 5,
-            retries=cluster.get("retries") or 0,
+            timeout_s=clamp_timeout(cluster.get("timeout_s")),
+            retries=clamp_retries(cluster.get("retries")),
             on_503=cluster.get("on_503") or "skip",
         ),
         sim=SimSettings(

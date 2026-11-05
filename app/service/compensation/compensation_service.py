@@ -19,6 +19,7 @@ from app.models.dto.compensation import (
 )
 from app.models.entity.user import UserEntity
 from app.core.config import settings
+from app.core.redis import redis_client
 from app.repo.audit_repo import AuditRepo
 from app.repo.compensation_repo import CompensationRepo
 from app.repo.machine_repo import MachineRepo
@@ -57,7 +58,8 @@ class CompensationService:
 
     async def get_compensation(self, machine_id: str) -> CompensationOut:
         await self._require(machine_id)
-        payload = await cluster_json("GET", f"/machines/{machine_id}/compensation")
+        cached = await self._sync_cache(f"sync:comp:{machine_id}")
+        payload = cached if cached is not None else await cluster_json("GET", f"/machines/{machine_id}/compensation")
         return CompensationOut(items=self._items(payload))
 
     async def put_compensation(self, machine_id: str, body: CompensationIn, user: UserEntity, idempotency_key: str | None) -> CompensationWriteOut:
@@ -75,6 +77,7 @@ class CompensationService:
         items = self._items(upstream) or [CompChannelOut(**row) for row in incoming]
         audit_id = self.audit.record(user.user_id, "compensation.write", machine_id, payload, upstream if isinstance(upstream, dict) else {"ok": True})
         self.history.record(user.user_id, machine_id, body.mode, incoming, audit_id)
+        await self._store_sync(f"sync:comp:{machine_id}", upstream if isinstance(upstream, (dict, list)) else {"channels": incoming})
         out = CompensationWriteOut(audit_id=audit_id, items=items)
         await self.session.commit()
         await self._store(idempotency_key, out)
@@ -117,7 +120,8 @@ class CompensationService:
         await self._require(machine_id)
         if not settings.cluster_base_url:
             return DriftListOut(items=[], supported=False)
-        payload = await cluster_json("GET", f"/machines/{machine_id}/drifts")
+        cached = await self._sync_cache(f"sync:drift:{machine_id}")
+        payload = cached if cached is not None else await cluster_json("GET", f"/machines/{machine_id}/drifts")
         rows = payload.get("drifts") or payload.get("items") if isinstance(payload, dict) else payload
         items = []
         for row in rows or []:
@@ -137,6 +141,26 @@ class CompensationService:
     def _items(self, payload: dict | list) -> list[CompChannelOut]:
         raw = payload if isinstance(payload, list) else payload.get("channels") or payload.get("items") or payload.get("compensation") or []
         return [CompChannelOut(channel=str(row.get("channel") or ""), value=float(row.get("value") or 0)) for row in raw if isinstance(row, dict)]
+
+    async def _sync_cache(self, key: str):
+        client = self.redis or redis_client()
+        try:
+            raw = await client.get(key)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    async def _store_sync(self, key: str, payload: dict | list) -> None:
+        client = self.redis or redis_client()
+        try:
+            await client.set(key, json.dumps(payload), ex=180)
+        except Exception:
+            return
 
     async def _cached(self, key: str | None):
         if not key or self.redis is None:

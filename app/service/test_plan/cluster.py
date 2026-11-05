@@ -9,6 +9,7 @@ from app.core.errors import AppError
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.test_plan_repo import TestPlanRepo
 from app.service.production.cluster import items
+from app.service.settings.cluster_policy import async_send, request_timeout
 
 log = logging.getLogger(__name__)
 
@@ -20,8 +21,7 @@ async def publish_cluster(payload: dict) -> dict | None:
     url = f"{base}/plans" if base.endswith("/api") else f"{base}/api/plans"
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
     try:
-        async with httpx.AsyncClient(timeout=settings.cluster_timeout_s) as client:
-            response = await client.post(url, json=payload, headers=headers)
+        response = await async_send("POST", url, timeout=request_timeout(), headers=headers, json_body=payload)
     except httpx.TimeoutException as exc:
         raise AppError(504, "CLUSTER_TIMEOUT", "集群发布方案超时") from exc
     except httpx.HTTPError as exc:
@@ -32,10 +32,10 @@ async def publish_cluster(payload: dict) -> dict | None:
     return data if isinstance(data, dict) else {}
 
 
-async def ingest_cluster_plans(session: AsyncSession) -> int:
+async def ingest_cluster_plans(session: AsyncSession, *, refresh: bool = False) -> int:
     """把集群已发布方案写入本地，测试执行下拉和 production precheck 都靠这张表。"""
     repo = TestPlanRepo(session)
-    if any(not row.draft for row in await repo.all()):
+    if not refresh and any(not row.draft for row in await repo.all()):
         return 0
     try:
         payload = await _get_plans()
@@ -80,8 +80,7 @@ async def _get_plans() -> dict | list | None:
     url = f"{base}/plans" if base.endswith("/api") else f"{base}/api/plans"
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(url, headers=headers)
+        response = await async_send("GET", url, timeout=request_timeout(), headers=headers)
     except httpx.TimeoutException as exc:
         raise AppError(504, "CLUSTER_TIMEOUT", "集群拉取方案超时") from exc
     except httpx.HTTPError as exc:

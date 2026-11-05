@@ -30,6 +30,7 @@ from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
 from app.service.settings.model import apply_shared_model
 from app.service.settings.sim import FAULT_CATALOG, SCENARIOS
+from app.service.settings.cluster_policy import RETRIES_MAX, TIMEOUT_MAX, TIMEOUT_MIN, apply_cluster_policy, request_timeout, sync_send
 from app.tasks.job_runs import snapshot
 from app.tasks.scheduler import apply_job_intervals
 
@@ -61,6 +62,7 @@ class SettingsService:
         row = await self.settings.save(payload)
         await self.settings.session.commit()
         apply_job_intervals(row.payload or {})
+        apply_cluster_policy(row.payload or {})
         return settings_out(settings_entity(row.payload or {}, row.updated_at))
 
     async def test_connection(self, body: TestConnectionIn) -> TestConnectionOut:
@@ -75,11 +77,11 @@ class SettingsService:
         stored_token = ((payload.get("cluster") or {}).get("token") or "") if body.source == "cluster" else ""
         if looks_masked(token) or token == mask_secret(stored_token):
             token = stored_token
-        timeout = max(float((payload.get("cluster") or {}).get("timeout_s") or 5), 30)
+        timeout = request_timeout()
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         started = perf_counter()
         try:
-            response = await asyncio.to_thread(_get_fleet, f"{base}/fleet", headers, timeout)
+            response = await asyncio.to_thread(sync_send, "GET", f"{base}/fleet", timeout=timeout, headers=headers)
             latency_ms = max(0, round((perf_counter() - started) * 1000))
         except Exception as exc:
             log.warning("test-connection failed: %s", exc)
@@ -188,9 +190,9 @@ class SettingsService:
         base = ((payload.get("sim") or {}).get("base_url") or "").strip().rstrip("/")
         if not base:
             raise AppError(422, "VALIDATION_ERROR", "设置校验失败", {"issues": [{"field": "sim.base_url", "message": "仿真地址不能为空"}]})
-        timeout = max(float((payload.get("cluster") or {}).get("timeout_s") or 5), 30)
+        timeout = request_timeout()
         try:
-            response = await asyncio.to_thread(_cluster_request, method, f"{base}{path}", timeout, body)
+            response = await asyncio.to_thread(sync_send, method, f"{base}{path}", timeout=timeout, json_body=body)
         except httpx.TimeoutException as exc:
             raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
         except httpx.HTTPError as exc:
@@ -217,9 +219,16 @@ class SettingsService:
         issues: list[dict] = []
         if incoming.get("source") not in {"cluster", "sim"}:
             issues.append({"field": "source", "message": "source 只能是 cluster 或 sim"})
-        on_503 = (incoming.get("cluster") or {}).get("on_503")
+        cluster = incoming.get("cluster") or {}
+        on_503 = cluster.get("on_503")
         if on_503 not in {"skip", "pause"}:
             issues.append({"field": "cluster.on_503", "message": "on_503 只能是 skip 或 pause"})
+        timeout = cluster.get("timeout_s")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < TIMEOUT_MIN or timeout > TIMEOUT_MAX:
+            issues.append({"field": "cluster.timeout_s", "message": f"请求超时需要在 {TIMEOUT_MIN} 到 {TIMEOUT_MAX} 秒之间"})
+        retries = cluster.get("retries")
+        if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0 or retries > RETRIES_MAX:
+            issues.append({"field": "cluster.retries", "message": f"失败重试需要在 0 到 {RETRIES_MAX} 次之间"})
         jobs = incoming.get("jobs") or []
         keys = [job.get("key") for job in jobs]
         if set(keys) != set(JOB_KEYS) or len(keys) != len(JOB_KEYS):
@@ -232,16 +241,6 @@ class SettingsService:
                 issues.append({"field": f"jobs.{key}.interval_s", "message": f"{key} 间隔不能低于 {lowest} 秒"})
         if issues:
             raise AppError(422, "VALIDATION_ERROR", "设置校验失败", {"issues": issues})
-
-
-def _get_fleet(url: str, headers: dict[str, str], timeout: float) -> httpx.Response:
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        return client.get(url, headers=headers)
-
-
-def _cluster_request(method: str, url: str, timeout: float, body: dict) -> httpx.Response:
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        return client.request(method, url, json=body)
 
 
 def _json(response: httpx.Response) -> dict | list | None:

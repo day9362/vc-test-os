@@ -17,6 +17,7 @@ from app.models.orm.test_plan import TestPlanOrm
 from app.repo.run_repo import RunRepo
 from app.repo.settings_repo import SettingsRepo
 from app.service.runs.cluster_ingest import _get, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
+from app.service.settings.cluster_policy import request_timeout, sync_send
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
 from app.service.runs.result_csv import build_result_export, points_from_body, raw_filename, render_raw, unique_names
 
@@ -122,9 +123,8 @@ class RunService:
         base = ((sim.get("base_url") or settings.cluster_base_url) or "").strip().rstrip("/")
         if not base:
             raise AppError(404, "NOT_FOUND", "ground-truth 仅仿真且打开评估开关时可用")
-        timeout = max(float((payload.get("cluster") or {}).get("timeout_s") or settings.cluster_timeout_s), 30)
         try:
-            response = await asyncio.to_thread(_get_ground_truth, f"{base}/runs/{run_id}/ground-truth", timeout)
+            response = await asyncio.to_thread(_get_ground_truth, f"{base}/runs/{run_id}/ground-truth")
         except httpx.TimeoutException as exc:
             raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
         except httpx.HTTPError as exc:
@@ -269,7 +269,6 @@ async def _ingest_in_background() -> None:
         log.warning("cluster run ingest skipped", exc_info=True)
 
 
-def _get_ground_truth(url: str, timeout: float) -> httpx.Response:
+def _get_ground_truth(url: str) -> httpx.Response:
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
-    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False, headers=headers) as client:
-        return client.get(url)
+    return sync_send("GET", url, timeout=request_timeout(), headers=headers)
