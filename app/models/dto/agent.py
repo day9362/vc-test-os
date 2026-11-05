@@ -1,6 +1,8 @@
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.service.agent.transcript import drop_query_trace
 
 
 ModuleName = Literal["agent.plan", "agent.ops", "agent.analysis"]
@@ -97,6 +99,12 @@ class AgentMessageOut(BaseModel):
     module: str | None = None
     tokens: list[int] | None = None
     time: int
+
+    @model_validator(mode="after")
+    def hide_query_trace(self):
+        if self.role == "agent":
+            self.text = drop_query_trace(self.text)
+        return self
 
 
 class SessionSummaryOut(BaseModel):

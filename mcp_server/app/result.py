@@ -64,5 +64,5 @@ def forbidden() -> dict:
         "只读模式不能执行写操作。",
         "FORBIDDEN",
         status=403,
-        hints=["外部客户端只能使用 vc_line 和 vc_data；写操作请在 VC-TestOS 的 AI Agent 页面发起。"],
+        hints=["外部客户端只能查询，不能改数据。写操作请在 VC-TestOS 的 AI Agent 页面发起。"],
     )

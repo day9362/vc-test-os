@@ -22,7 +22,7 @@ type Block =
   | { type: 'choices'; id: string; options: { label: string; text: string }[]; chosen: number | null }
   | { type: 'records'; id: string; items: RecordLink[]; more: number }
   | { type: 'plan'; plan_id: string; name: string; fields: [string, string][] }
-  | { type: 'action'; id: string; name: string; desc: string; arguments: Record<string, any>; status: 'pending' | 'done' | 'rejected' | 'expired'; result: string; risk: 'low' | 'medium' | 'high' }
+  | { type: 'action'; id: string; name: string; desc: string; arguments: Record<string, any>; status: 'pending' | 'done' | 'rejected' | 'expired'; result: string; risk: 'low' | 'medium' | 'high'; effects?: string[] }
 interface RecordLink { run_id: string; serial_number: string; batch_id: string; ended_at: number; label: string }
 interface RecordView { columns: string[]; rows: string[][]; chart: Record<string, any> | null; note: string }
 interface Msg { id: number; role: 'user' | 'agent'; text: string; blocks: Block[]; module?: string; tokens?: [number, number]; time: number; live?: boolean }
@@ -98,6 +98,43 @@ watch(currentId, (value) => {
 })
 const transcripts = ref<Record<string, Msg[]>>({})
 const msgs = computed(() => (currentId.value ? transcripts.value[currentId.value] : []) || [])
+
+function shownText(message: Msg) {
+  if (message.role !== 'agent') return message.text
+  let text = message.text.replace(/(?:^|\n)\s*查询过程\s*[：:]?[\s\S]*$/, '')
+  const actions = message.blocks.filter((block): block is Extract<Block, { type: 'action' }> => block.type === 'action')
+  for (const action of actions) {
+    if (action.desc) text = text.split(action.desc).join('')
+    for (const effect of action.effects || []) text = text.split(effect).join('')
+  }
+  text = text
+    .replace(/需要你在页面上批准[：:]?/g, '')
+    .replace(/请到右侧[「"']?待确认操作[」"']?点批准或拒绝[。．]?/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[：:]\s*(?=[。．]|$)/g, '')
+    .replace(/([。．])\1+/g, '$1')
+    .trim()
+  if (!actions.length) return text
+  if (!text) return '请在卡片上批准或拒绝。批准后我会继续下一步。'
+  if (/批准|拒绝|确认/.test(text)) return text
+  return `${text.replace(/[。．]?$/, '。')}请在卡片上批准或拒绝。`
+}
+
+function hasAction(message: Msg) {
+  return message.blocks.some((block) => block.type === 'action')
+}
+
+function actionTitle(name: string) {
+  if (name.includes('plan')) return '方案操作'
+  if (name.includes('board')) return '板子操作'
+  if (name.includes('alarm')) return '告警操作'
+  if (name.includes('report')) return '报告操作'
+  if (name.includes('quality')) return '质量操作'
+  return '设备操作'
+}
+
+const RISK_TEXT = { low: '低风险', medium: '中风险', high: '高风险' } as const
 
 function redraw() {
   viewKey.value += 1
@@ -176,6 +213,27 @@ async function send(q = input.value, module?: AgentModule) {
 
 function toolLabel(name: string) {
   return name.split('__').pop() || name
+}
+
+const openTools = ref<Record<string, boolean>>({})
+
+function toolKey(messageId: number, index: number) {
+  return `${messageId}:${index}`
+}
+
+function toggleTool(messageId: number, index: number) {
+  const key = toolKey(messageId, index)
+  openTools.value = { ...openTools.value, [key]: !openTools.value[key] }
+}
+
+function prettyJson(raw: string) {
+  const text = raw.trim()
+  if (!text) return ''
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
 }
 
 async function readReply(sid: string, text: string, live: Msg, module: AgentModule, scopeBody: { model: string; batches: string[] }) {
@@ -517,9 +575,12 @@ onMounted(() => {
               <div v-if="b.type === 'tool'" class="tool">
                 <Database v-if="b.name.startsWith('sql')" :size="13" /><SquareTerminal v-else :size="13" />
                 <span class="mono" :title="b.name">{{ toolLabel(b.name) }}</span>
-                <span v-if="b.args" class="mono muted ellipsis grow" :title="b.args">{{ b.args }}</span><span v-else class="grow" />
-                <span v-if="b.result" class="mono t-ok">→ {{ b.result }}</span>
-                <span v-else-if="m.live" class="mono muted">执行中</span>
+                <span v-if="!b.result && m.live" class="mono muted">执行中</span>
+                <span class="grow" />
+                <button v-if="b.args || b.result" class="btn btn-ghost btn-sm" type="button" @click="toggleTool(m.id, i)">
+                  <ChevronRight :size="14" :class="{ 'turn-down': openTools[toolKey(m.id, i)] }" />{{ openTools[toolKey(m.id, i)] ? '收起' : '查看返回' }}
+                </button>
+                <pre v-if="openTools[toolKey(m.id, i)]" class="tool-json">{{ [prettyJson(b.args), prettyJson(b.result)].filter(Boolean).join('\n\n') }}</pre>
               </div>
             </template>
             <template v-for="(b, i) in m.blocks" :key="'d' + i">
@@ -566,7 +627,7 @@ onMounted(() => {
               </div>
             </template>
             <div v-if="m.live && !m.text && !m.blocks.length" class="row fs-sm muted"><Loader2 :size="14" class="spin" />正在通过 MCP 操作测试机…</div>
-            <p v-if="m.text" class="txt">{{ m.text }}</p>
+            <p v-if="shownText(m) && !hasAction(m)" class="txt">{{ shownText(m) }}</p>
             <template v-for="(b, i) in m.blocks" :key="'b' + i">
               <div v-if="b.type === 'choices'" class="card">
                 <div class="ch">请选择下一步<span class="grow" /><span v-if="b.chosen != null" class="tag ok">已发送</span></div>
@@ -585,21 +646,26 @@ onMounted(() => {
               <div v-else-if="b.type === 'action'" class="card act" :data-action-id="b.id" :class="[b.status, { expired: isExpired(b), located: located === b.id }]">
                 <div class="ch">
                   <span v-if="b.status === 'pending' && !isExpired(b)" class="hz hazard" />
-                  <Wrench :size="14" /><span class="desc grow">{{ b.desc }}</span>
+                  <Wrench :size="14" /><span>{{ actionTitle(b.name) }}</span>
+                  <span class="tag">{{ RISK_TEXT[b.risk] || '中风险' }}</span>
+                  <span class="grow" />
                   <span v-if="isExpired(b)" class="tag">失效</span>
                   <span v-else-if="b.status === 'pending'" class="tag warn">待确认</span>
                   <span v-else-if="b.status === 'done'" class="tag ok">已执行</span>
                   <span v-else class="tag">已拒绝</span>
                 </div>
-                <pre class="api"><b>{{ b.name }}</b>
-{{ JSON.stringify(b.arguments || {}, null, 2) }}</pre>
-                <p v-if="b.result" class="fs-xs" style="padding: 0 10px 8px">{{ b.result }}</p>
-                <div v-if="b.status === 'pending' || isExpired(b)" class="row act-actions" style="padding: 0 10px 10px; justify-content: flex-end">
+                <p class="act-sentence">{{ b.desc }}</p>
+                <ul v-if="b.effects?.length" class="act-effects">
+                  <li v-for="effect in b.effects" :key="effect">{{ effect }}</li>
+                </ul>
+                <p v-if="b.result" class="fs-xs act-result">{{ b.result }}</p>
+                <div v-if="b.status === 'pending' || isExpired(b)" class="row act-actions">
                   <button class="btn btn-sm" :disabled="isExpired(b) || acting === b.id" @click="reject(b)"><X :size="14" />拒绝</button>
                   <button class="btn btn-sm btn-primary" :disabled="isExpired(b) || acting === b.id" @click="approve(b)"><Check :size="14" />批准并执行</button>
                 </div>
               </div>
             </template>
+            <p v-if="shownText(m) && hasAction(m)" class="txt">{{ shownText(m) }}</p>
             <div v-if="m.live && (m.text || m.blocks.length)" class="row fs-sm muted"><Loader2 :size="14" class="spin" />还在继续</div>
           </div>
         </div>
@@ -694,7 +760,9 @@ onMounted(() => {
 .tool { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; padding: 4px 10px; font-size: var(--fs-xs); background: var(--c-surface-2); border-left: 2px solid var(--c-text-3); min-width: 0; max-width: 100%; overflow: hidden; }
 .tool svg { flex: none; color: var(--c-text-3); margin-top: 2px; }
 .tool > .mono:first-of-type { white-space: nowrap; }
-.tool .t-ok { flex: 1 1 100%; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 4.8em; overflow: auto; }
+.tool .btn { margin-left: auto; }
+.tool-json { flex: 1 1 100%; margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; background: var(--c-surface); border: var(--bw) solid var(--c-border); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.turn-down { transform: rotate(90deg); }
 .card { border: var(--bw) solid var(--c-border); background: var(--c-surface); max-width: 100%; min-width: 0; }
 .ch { display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; font-weight: 600; font-size: var(--fs-sm); border-bottom: var(--bw) solid var(--c-border); position: relative; min-width: 0; }
 .ch .desc { min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
@@ -708,6 +776,10 @@ onMounted(() => {
 .kv { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--c-border); }
 .kv div { display: flex; flex-direction: column; padding: 6px 10px; background: var(--c-surface); font-size: var(--fs-xs); color: var(--c-text-3); }
 .kv b { color: var(--c-text); font-size: var(--fs-sm); }
+.act-sentence { margin: 0; padding: 12px 14px 4px; line-height: 1.7; font-size: var(--fs-sm); }
+.act-effects { margin: 0; padding: 4px 14px 8px 28px; color: var(--c-text-2); font-size: var(--fs-xs); line-height: 1.6; }
+.act-result { margin: 0; padding: 0 14px 8px; color: var(--c-text-2); }
+.act-actions { padding: 0 10px 10px; justify-content: flex-end; }
 .act.pending { border-color: var(--c-warn); }
 .act.rejected { opacity: 0.6; }
 .act.expired { border-color: var(--c-border); background: var(--c-surface-2); color: var(--c-text-3); }

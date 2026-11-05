@@ -14,7 +14,7 @@ from app.service.agent.scope import with_scope
 from app.service.agent.sessions import AgentSessionService, session_title
 from app.service.agent.actions import confirmation_card, strip_model_confirmation
 from app.service.agent.cards import extract_choices, present_cards
-from app.service.agent.transcript import TurnBuilder, turn_from_messages
+from app.service.agent.transcript import TurnBuilder, drop_query_trace, turn_from_messages
 
 
 class TranscriptTests(unittest.TestCase):
@@ -34,6 +34,17 @@ class TranscriptTests(unittest.TestCase):
         self.assertIn("已发布", turn["blocks"][0]["result"])
         self.assertEqual(turn["tokens"], [120, 40])
         self.assertEqual(turn["sdk_session_id"], "sdk-1")
+
+    def test_drops_query_trace_but_keeps_choices(self) -> None:
+        raw = "开测已提交，请到右侧批准。\n\n查询过程\n\n用 vc_data 的 batches 查到原批次。\n\n```vc-choices\n[{\"label\":\"补建待测板\",\"text\":\"给这个批次补建待测板\"}]\n```"
+        self.assertEqual(drop_query_trace(raw).startswith("开测已提交"), True)
+        self.assertNotIn("查询过程", drop_query_trace(raw))
+        self.assertNotIn("vc_data", drop_query_trace(raw))
+        self.assertIn("vc-choices", drop_query_trace(raw))
+        result = _named("ResultMessage", result=raw, usage={"input_tokens": 1, "output_tokens": 1}, session_id="sdk-1", is_error=False, errors=None)
+        turn = turn_from_messages([result])
+        self.assertNotIn("查询过程", turn["text"])
+        self.assertEqual(turn["blocks"][0]["type"], "choices")
 
     def test_streams_text_and_tools_before_the_result(self) -> None:
         builder = TurnBuilder()
@@ -148,7 +159,7 @@ class TranscriptTests(unittest.TestCase):
             "error": {"code": "APPROVAL_REQUIRED"},
             "approval": {
                 "confirm_id": "cf_abc",
-                "tool": "vc_operate",
+                "tool": "vc_machine",
                 "action": "sim_speed",
                 "arguments": {"machine_ids": ["M08"], "speed": 2},
                 "risk": "medium",
@@ -157,7 +168,7 @@ class TranscriptTests(unittest.TestCase):
             },
         }, ensure_ascii=False)
         assistant = _named("AssistantMessage", content=[
-            _named("ToolUseBlock", id="t1", name="mcp__vc-testos__vc_operate", input={
+            _named("ToolUseBlock", id="t1", name="mcp__vc-testos__vc_machine", input={
                 "action": "sim_speed",
                 "machine_ids": ["M08"],
                 "speed": 2,
@@ -171,7 +182,7 @@ class TranscriptTests(unittest.TestCase):
         self.assertNotIn("call", turn["blocks"][0])
         action = turn["blocks"][1]
         self.assertEqual(action["type"], "action")
-        self.assertEqual(action["name"], "vc_operate")
+        self.assertEqual(action["name"], "vc_machine")
         self.assertEqual(action["status"], "pending")
         self.assertEqual(action["desc"], "把 M08 的仿真倍率改为 2")
         self.assertEqual(action["arguments"], {"action": "sim_speed", "confirm_id": "cf_abc"})
@@ -330,7 +341,7 @@ class DraftParseTests(unittest.TestCase):
 class ToolListTests(unittest.TestCase):
     def test_keeps_every_vc_tool(self) -> None:
         names = {item.removeprefix("mcp__vc-testos__") for item in MCP_TOOLS}
-        self.assertEqual(names, {"vc_line", "vc_data", "vc_plan", "vc_operate", "vc_quality"})
+        self.assertEqual(names, {"vc_alarm", "vc_board", "vc_machine", "vc_plan", "vc_report", "vc_run"})
 
 
 class EnvTests(unittest.TestCase):

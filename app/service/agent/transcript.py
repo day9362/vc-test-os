@@ -1,5 +1,23 @@
 import json
+import re
 from typing import Any
+
+_QUERY_TRACE = re.compile(r"(?:^|\n)\s*查询过程\s*[：:]?")
+_CHOICES = re.compile(r"```vc-choices[\s\S]*?```", re.IGNORECASE)
+
+
+def drop_query_trace(text: str) -> str:
+    """用户不看工具调用过程。从「查询过程」起删到结尾，保留后面的选项块。"""
+    if not text:
+        return ""
+    match = _QUERY_TRACE.search(text)
+    if match is None:
+        return text
+    head = text[: match.start()].rstrip()
+    fence = _CHOICES.search(text[match.end() :])
+    if fence is None:
+        return head
+    return f"{head}\n\n{fence.group(0)}".strip()
 
 from app.service.agent.actions import confirmation_card
 from app.service.agent.cards import extract_choices, present_cards
@@ -133,7 +151,7 @@ class TurnBuilder:
             self.failed = False
         text = note or body
         if text:
-            return text
+            return drop_query_trace(text)
         if self.hit_turn_limit() or self.stopped_early:
             return "工具调用已经用完，结论还没有写出来。"
         return ""

@@ -9,7 +9,7 @@ from fastmcp.server.dependencies import get_http_headers
 
 @dataclass(frozen=True)
 class Identity:
-    """带用户令牌的是用户模式，可以用写工具；没有令牌的外部客户端是只读模式。"""
+    """带用户令牌的是用户模式，可以执行写动作；没有令牌的外部客户端只能查询。"""
 
     token: str | None = None
 

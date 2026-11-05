@@ -74,7 +74,7 @@ async def vc_data(
     - calibration：某台机的通道偏差、漂移、当前补偿和补偿建议，要 machine_id。
     - calibration_history：补偿修改历史，要 machine_id。
     - audit：操作审计记录，可按 machine_id 筛选。
-    - sim_catalog：仿真场景和可注入的故障种类（仅仿真数据源）。用户明确要求切场景或注入故障时才查，再交给 vc_operate。
+    - sim_catalog：仿真场景和可注入的故障种类（仅仿真数据源）。用户明确要求切场景或注入故障时才查，再交给 vc_machine。
     - boards：按 model、batch_id、board_state（NEW 待测、IN_MACHINE 在机、TESTED 已测完）、golden 查板。没有等级、单板缺陷和真实热阻。
     - board：按 serial_number 看一片板，字段同上。
     - defect_kinds：缺陷种类和现象。这是目录，不能据此判断某一片板有没有缺陷。
