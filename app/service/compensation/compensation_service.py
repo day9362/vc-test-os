@@ -25,6 +25,7 @@ from app.repo.compensation_repo import CompensationRepo
 from app.repo.machine_repo import MachineRepo
 from app.repo.run_repo import RunRepo
 from app.service.compensation.bias import estimate_channel_bias, is_golden
+from app.service.overview.rules import load_alarm_rules
 from app.service.compensation.cluster import cluster_json
 from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
 from app.service.runs.run_service import RunService
@@ -54,7 +55,8 @@ class CompensationService:
             (row.machine_id, int(row.ended_at or 0), row.result if isinstance(row.result, dict) else None)
             for row in rows
         ]
-        return estimate_channel_bias(machine_id, pieces)
+        rules = await load_alarm_rules(self.session)
+        return estimate_channel_bias(machine_id, pieces, rules.drift_c)
 
     async def get_compensation(self, machine_id: str) -> CompensationOut:
         await self._require(machine_id)
