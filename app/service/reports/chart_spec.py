@@ -84,7 +84,8 @@ def _boxes(spec: dict) -> dict:
     for item in _series_of(spec):
         rows = []
         for raw in item["data"][: len(categories)]:
-            rows.append(_box_row(raw))
+            parsed = _box_row(raw)
+            rows.append("-" if parsed is None else parsed)
         if len(rows) != len(categories):
             continue
         series.append({"type": "boxplot", "name": item["name"], "data": rows})
@@ -242,7 +243,9 @@ def _series_of(spec: dict) -> list[dict]:
     return series
 
 
-def _box_row(raw: object) -> list[float]:
+def _box_row(raw: object) -> list[float] | None:
+    if raw is None:
+        return None
     if not isinstance(raw, list) or len(raw) < 5:
         raise AppError(502, "AGENT_FAILED", "箱线需要 min、q1、median、q3、max")
     values = [_finite(item) for item in raw[:5]]

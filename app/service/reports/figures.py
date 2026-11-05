@@ -23,7 +23,7 @@ from app.repo.run_repo import RunRepo
 from app.service.ai.usage import UsageService
 from app.service.reports.chart_spec import compile_stored, panels_from_stored
 from app.service.reports.narrative import chat_completions_url
-from app.service.reports.figure_scope import asked_group, asks_ambient, prepare_records, uses_fixed_charts
+from app.service.reports.figure_scope import asked_group, asks_ambient, chart_route, prepare_records, uses_fixed_charts
 from app.service.reports.presets import PRESETS, fail_names, run_preset, test_rows
 from app.service.reports.sandbox import read_result, reject_code, run_in_sandbox
 from app.service.reports.store import reports_dir
@@ -131,7 +131,7 @@ class FigureService:
             if prepared.summary is not None and not prepared.records:
                 raise AppError(400, "BAD_REQUEST", "；".join(prepared.notes) or "没有可画的温差")
             group = "" if row.preset else asked_group(row.prompt)
-            fixed = row.preset or ("grouped" if group else "overview" if uses_fixed_charts(row.prompt) else "")
+            fixed = row.preset or chart_route(row.prompt)
             if fixed:
                 await self._step(row, "正在计算")
                 result = await asyncio.to_thread(run_preset, fixed, prepared.records, group, asks_ambient(row.prompt))

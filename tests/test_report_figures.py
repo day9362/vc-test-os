@@ -2,7 +2,7 @@ import unittest
 
 from app.core.errors import AppError
 from app.service.reports.chart_spec import compile_stored
-from app.service.reports.figure_scope import asked_group, prepare_records, uses_fixed_charts
+from app.service.reports.figure_scope import asked_group, chart_route, prepare_records, uses_fixed_charts
 from app.service.reports.pdf import chart_bars
 from app.models.orm.run import RunOrm
 from app.service.reports.figures import limit_deltas
@@ -143,6 +143,45 @@ class FigureScopeTests(unittest.TestCase):
         self.assertEqual(panels[0]["x_name"], "槽位")
         self.assertEqual(panels[0]["categories"], ["M01 槽1", "M01 槽2"])
         self.assertEqual(panels[1]["categories"], ["M01 槽1", "M01 槽2"])
+
+    def test_a_vague_request_charts_machines_before_batches(self) -> None:
+        self.assertEqual(chart_route("分析一下这两批数据"), "machine_batch")
+        self.assertEqual(chart_route("温差分析一下这批产品"), "machine_batch")
+        self.assertEqual(chart_route("按机台比较 Temp_T0-T1"), "grouped")
+        self.assertEqual(chart_route("分析一下M01的槽1和槽2"), "overview")
+        self.assertTrue(uses_fixed_charts("分析一下这两批数据"))
+        records = []
+        for batch_id, machine_id, left, right in (
+            ("B1", "M01", 6.0, 3.5),
+            ("B1", "M02", 4.0, 2.5),
+            ("B2", "M01", 5.0, 3.0),
+        ):
+            records.append({
+                "batch_id": batch_id,
+                "machine_id": machine_id,
+                "slot_index": 1,
+                "deltas": [
+                    {"item": "Temp_T0-T1", "value": left, "low": 0, "high": 5, "limited": True, "order": 0},
+                    {"item": "Temp_T1-T2", "value": right, "low": 0, "high": 4, "limited": True, "order": 1},
+                ],
+            })
+        prepared = prepare_records("分析一下这两批数据", records)
+        self.assertEqual([row[0] for row in prepared.summary["rows"]], ["Temp_T0-T1", "Temp_T1-T2"])
+        panels = run_preset("machine_batch", prepared.records)["panels"]
+        self.assertEqual(
+            [panel["title"] for panel in panels],
+            ["Temp_T0-T1（机台）", "Temp_T1-T2（机台）", "Temp_T0-T1（批次）", "Temp_T1-T2（批次）"],
+        )
+        self.assertEqual(panels[0]["x_name"], "机台")
+        self.assertEqual(panels[0]["categories"], ["M01", "M02"])
+        self.assertEqual([item["name"] for item in panels[0]["series"]], ["B1", "B2"])
+        self.assertEqual(panels[0]["series"][1]["data"][1], None)
+        self.assertIsNotNone(panels[0]["series"][0]["data"][1])
+        self.assertEqual(panels[2]["x_name"], "批次")
+        self.assertEqual(panels[2]["categories"], ["B1", "B2"])
+        compiled, error = compile_stored({"panels": [panels[0]]})
+        self.assertEqual(error, "")
+        self.assertEqual(compiled[0]["option"]["series"][1]["data"][1], "-")
 
     def test_temperature_charts_keep_delta_items_and_list_each_slot_mean(self) -> None:
         records = []

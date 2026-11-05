@@ -19,7 +19,15 @@ class Prepared:
 
 
 def uses_fixed_charts(prompt: str) -> bool:
-    return _about_delta(prompt) or _about_place(prompt) or _about_limit(prompt) or bool(asked_group(prompt))
+    return bool((prompt or "").strip())
+
+
+def chart_route(prompt: str) -> str:
+    if asked_group(prompt):
+        return "grouped"
+    if _about_place(prompt):
+        return "overview"
+    return "machine_batch"
 
 
 def asks_ambient(prompt: str) -> bool:

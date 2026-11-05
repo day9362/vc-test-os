@@ -34,6 +34,8 @@ _DELTA = re.compile(r"^Temp_T\d+-T\d+$", re.I)
 def run_preset(preset_id: str, records: list[dict], group: str = "", show_ambient: bool = False) -> dict:
     if preset_id == "grouped":
         return _grouped(records, group or "slot", show_ambient)
+    if preset_id == "machine_batch":
+        return _machine_then_batch(records, show_ambient)
     if preset_id == "overview":
         return _overview(records, show_ambient)
     builder = {
@@ -73,6 +75,33 @@ def test_rows(records: list[dict], tests: object) -> list[list[str]]:
 
 def _grouped(records: list[dict], group: str, show_ambient: bool = False) -> dict:
     axis = {"slot": "槽位", "machine": "机台", "batch": "批次"}.get(group, "槽位")
+    return _done(f"按{axis}的卡限项", _group_panels(records, group, show_ambient))
+
+
+def _machine_then_batch(records: list[dict], show_ambient: bool = False) -> dict:
+    names = _item_names(records, limited_only=True)
+    batches = _batch_order(records)
+    machine = {panel["title"]: panel for panel in _group_panels(records, "machine", False)}
+    batch = {panel["title"]: panel for panel in _group_panels(records, "batch", False)}
+    chosen = [name for name in names if name in machine or name in batch][:8]
+    panels = []
+    for name in chosen:
+        if len(batches) >= 2:
+            panel = _machine_batches(records, name, batches)
+            if panel:
+                panels.append(panel)
+        elif name in machine:
+            panels.append(_retitle(machine[name], f"{name}（机台）"))
+    panels += [_retitle(batch[name], f"{name}（批次）") for name in chosen if name in batch]
+    if show_ambient:
+        ambient = _ambient_panel(records)
+        if ambient:
+            panels.append(ambient)
+    return _done("按机台、按批次的卡限项", panels)
+
+
+def _group_panels(records: list[dict], group: str, show_ambient: bool) -> list[dict]:
+    axis = {"slot": "槽位", "machine": "机台", "batch": "批次"}.get(group, "槽位")
     panels = []
     names = [name for name in _item_names(records, limited_only=True) if show_ambient or name != "室温"]
     for name in names:
@@ -92,7 +121,48 @@ def _grouped(records: list[dict], group: str, show_ambient: bool = False) -> dic
         panel = _box(name, axis, labels, [grouped[label] for label in labels], chosen)
         panel["y_name"] = "W" if name == "power_w" else "℃"
         panels.append(panel)
-    return _done(f"按{axis}的卡限项", panels)
+    return panels
+
+
+def _retitle(panel: dict, title: str) -> dict:
+    copied = dict(panel)
+    copied["title"] = title
+    return copied
+
+
+def _batch_order(records: list[dict]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for point in _chart_points(records):
+        batch = point["batch_id"]
+        if batch and batch not in seen:
+            seen.add(batch)
+            ordered.append(batch)
+    return ordered
+
+
+def _machine_batches(records: list[dict], name: str, batches: list[str]) -> dict | None:
+    points = [point for point in _chart_points(records) if point["item"] == name and point["machine_id"]]
+    if not points:
+        return None
+    machines = sorted({point["machine_id"] for point in points}, key=_place_key)[:24]
+    shown = batches[:6]
+    series = []
+    for batch in shown:
+        rows: list[list[float] | None] = []
+        for machine in machines:
+            values = [point["value"] for point in points if point["batch_id"] == batch and point["machine_id"] == machine]
+            rows.append(five_number(values) if values else None)
+        series.append({"name": batch, "data": rows})
+    return {
+        "title": f"{name}（机台）",
+        "type": "boxplot",
+        "x_name": "机台",
+        "y_name": "W" if name == "power_w" else "℃",
+        "categories": machines,
+        "series": series,
+        "marks": _limit_marks(points),
+    }
 
 
 def _group_label(point: dict, group: str) -> str:
