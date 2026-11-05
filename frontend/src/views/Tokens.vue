@@ -85,6 +85,7 @@ const budget = computed(() => summary.value?.month.budget ?? 0)
 const alertPct = computed(() => summary.value?.month.alert_pct ?? 80)
 const paused = computed(() => summary.value?.month.paused ?? false)
 const budgetPct = computed(() => budget.value > 0 ? (monthUsed.value / budget.value) * 100 : 0)
+const alerted = computed(() => budget.value > 0 && monthUsed.value * 100 >= budget.value * alertPct.value)
 const inShare = computed(() => total.value > 0 ? (totalIn.value / total.value) * 100 : 0)
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n)))
 const nameOf = (id: string) => modules.value.find((item) => item.id === id)?.name ?? id
@@ -178,6 +179,7 @@ watch(range, load)
 
     <p v-if="loadError" class="t-danger">{{ loadError }} <button class="btn btn-sm" @click="load">重试</button></p>
     <p v-if="paused" class="t-danger">本月预算已用完。自动归因已暂停，手动发起的方案、对话和报告仍可使用。</p>
+    <p v-else-if="alerted" class="t-danger">本月 Token 已用到预算的 {{ budgetPct.toFixed(1) }}%，已达到 {{ alertPct }}% 提醒线。</p>
 
     <div class="grid g-5">
       <Kpi label="Token 总量" :value="fmt(total)" :icon="Coins" :sub="`近 ${range} 天 · ${perModule.length} 个模块`" />
