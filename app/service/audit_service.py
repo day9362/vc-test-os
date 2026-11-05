@@ -4,6 +4,7 @@ from app.core.errors import AppError
 from app.models.dto.audit import AuditItemOut, AuditPageOut
 from app.models.orm.alarm import AuditOrm
 from app.repo.audit_repo import AuditRepo
+from app.service.audit_note import audit_note
 
 
 class AuditService:
@@ -34,6 +35,7 @@ def _item(row: AuditOrm) -> AuditItemOut:
         actor=row.actor,
         action=row.action,
         machine_id=row.machine_id or "",
+        note=audit_note(row.actor, row.action, row.machine_id or "", row.request or {}, row.result or {}),
         request=row.request or {},
         result=row.result or {},
     )

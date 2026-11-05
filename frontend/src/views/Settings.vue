@@ -66,18 +66,94 @@ const scenario = ref(scenarios.value[0].name)
 const fault = ref(faults.value[0].kind)
 const jobRuns = ref<Record<string, { last_at: number | null; elapsed_ms: number | null; failed: boolean | null }>>({})
 const jobStatusError = ref('')
-const auditRows = ref<{ audit_id: string; time: number; actor: string; action: string; machine_id: string }[]>([])
+interface AuditRow {
+  audit_id: string
+  time: number
+  actor: string
+  action: string
+  machine_id: string
+  note?: string
+  request?: Record<string, unknown>
+  result?: Record<string, unknown>
+}
+const auditRows = ref<AuditRow[]>([])
 const auditHint = ref('打开本页会读取最近的写操作')
+
+function auditNote(row: AuditRow) {
+  if (row.note) return row.note
+  const who = row.actor || '未知用户'
+  const req = row.request || {}
+  const done = row.result || {}
+  const machine = row.machine_id || String(req.machine_id || '')
+  const slot = req.slot_index
+  const slotText = slot === undefined || slot === null || slot === '' ? '' : `${slot} 号槽`
+  const join = (value: unknown) => Array.isArray(value) ? value.filter(Boolean).join('、') : String(value || '')
+  const name = String(req.name || req.plan_id || '')
+  if (row.action === 'settings.save') {
+    const changes = Array.isArray(req.changes) ? req.changes.map(String) : []
+    if (changes.length) return `${who} 修改了系统设置：${changes.slice(0, 8).join('、')}${changes.length > 8 ? ` 等 ${changes.length} 项` : ''}`
+    return `${who} 保存了系统设置`
+  }
+  if (row.action === 'sim.clock') {
+    const targets = join(req.machine_ids)
+    return `${who} 把${targets ? `${targets} 的` : ''}仿真倍率改为 ×${req.speed}`
+  }
+  if (row.action === 'sim.scenario') return `${who} 给 ${machine || '机台'} 应用了仿真场景 ${req.name || ''}`.trim()
+  if (row.action === 'sim.fault') {
+    const place = machine && slotText ? `${machine} 的 ${slotText}` : machine || slotText || '机台'
+    return `${who} 给 ${place}注入了故障 ${req.kind || ''}`.trim()
+  }
+  if (row.action === 'compensation.write') return `${who} ${req.mode === 'add' ? '叠加' : '覆盖'}写入了 ${machine || '机台'} 的通道补偿`
+  if (row.action === 'report.export') {
+    const batches = join(req.batch_ids)
+    return `${who} 导出了${batches ? `批次 ${batches} 的` : ''}报告`
+  }
+  if (row.action === 'plan.dispatch') {
+    const machines = join(req.machine_ids)
+    return `${who} 把方案 ${req.plan_id || '方案'} 下发${machines ? `到 ${machines}` : ''}`
+  }
+  if (row.action === 'production.start') return `${who} 开始了连续生产`
+  if (row.action === 'production.stop') return `${who} 停止了批次 ${req.batch_id || done.batch_id || ''} 的连续生产`.replace('批次  的', '的')
+  if (row.action === 'batch.create') {
+    const pieces = done.count === undefined || done.count === '' ? '' : `，共 ${done.count} 片`
+    return `${who} 创建了批次${done.batch_id ? ` ${done.batch_id}` : ''}${pieces}`
+  }
+  if (row.action === 'plan.publish') return `${who} 发布了方案 ${name}`.trim()
+  if (row.action === 'plan.draft') return `${who} 保存了方案草稿 ${name}`.trim()
+  if (row.action === 'plan.draft_update') return `${who} 修改了方案草稿 ${name}`.trim()
+  if (row.action === 'plan.draft_delete') return `${who} 删除了方案草稿 ${req.plan_id || ''}`.trim()
+  if (row.action === 'plan.from_text') return `${who} 用一句话生成了方案草稿`
+  if (row.action === 'alarm.ack') return `${who} 确认了${machine ? `${machine} ` : ''}告警 ${req.alarm_id || ''}`.trim()
+  if (row.action === 'alarm.unack') return `${who} 取消确认了${machine ? `${machine} ` : ''}告警 ${req.alarm_id || ''}`.trim()
+  if (row.action === 'alarm.ack_all') return `${who} 确认了全部未确认告警${done.updated === undefined ? '' : `，共 ${done.updated} 条`}`
+  if (row.action === 'alarm.attribution') return `${who} 重新归因了${machine ? `${machine} ` : ''}告警 ${req.alarm_id || ''}`.trim()
+  if (row.action === 'slot.load') return `${who} 把 ${req.serial_number || '单板'} 装入 ${machine || '机台'} 的 ${slotText || '槽位'}`
+  if (row.action === 'slot.start') return `${who} 启动了 ${machine || '机台'} 的 ${slotText || '槽位'}`
+  if (row.action === 'slot.abort') return `${who} 中止了 ${machine || '机台'} 的 ${slotText || '槽位'}`
+  if (row.action === 'slot.clear_error') return `${who} 清除了 ${machine || '机台'} 的 ${slotText || '槽位'} 错误`
+  if (row.action === 'machine.power_on') return `${who} 给 ${machine || '机台'} 上电`
+  if (row.action === 'machine.power_off') return `${who} 关闭了 ${machine || '机台'}`
+  if (row.action === 'machine.reset') return `${who} 复位了 ${machine || '机台'}`
+  if (row.action === 'machine.maintenance') return `${who} 让 ${machine || '机台'} ${req.on ? '进入' : '退出'}维修`
+  if (row.action === 'product.requeue') return `${who} 把单板 ${req.serial_number || ''} 重新排队`.trim()
+  return `${who} 执行了 ${row.action || '写操作'}`
+}
 
 async function loadAudit() {
   try {
-    const body = await api<{ items: { audit_id: string; time: number; actor: string; action: string; machine_id: string }[] }>('/audit?limit=30')
+    const body = await api<{ items: AuditRow[] }>('/audit?limit=30')
     auditRows.value = body.items || []
     auditHint.value = `${auditRows.value.length} 条写操作`
+    return true
   } catch (err) {
     auditRows.value = []
     auditHint.value = err instanceof Error ? err.message : '审计日志没有读到'
+    return false
   }
+}
+
+async function refreshAudit() {
+  if (await loadAudit()) app.toast({ kind: 'ok', title: '刷新成功', desc: auditHint.value })
 }
 
 function jobText(key: string) {
@@ -98,6 +174,7 @@ async function setSpeed(speed: number) {
       headers: { 'Idempotency-Key': crypto.randomUUID() },
     })
     s.commitSpeed(speed)
+    await loadAudit()
   } catch (err) {
     d.value.sim.speed = s.saved.sim.speed
     app.toast({ kind: 'danger', title: '仿真倍率没有改成', desc: err instanceof Error ? err.message : '' })
@@ -127,6 +204,7 @@ async function inject(kind: 'scenario' | 'fault') {
       })
     }
     app.toast({ kind: 'warn', title: `已注入 ${what}`, desc: `${scenarioTarget.value} · 可在设备配置页查看效果` })
+    await loadAudit()
   } catch (err) {
     app.toast({ kind: 'danger', title: '没有注入', desc: err instanceof Error ? err.message : '' })
   }
@@ -136,6 +214,7 @@ async function save() {
   try {
     await s.save()
     app.toast({ kind: 'ok', title: '设置已保存', desc: '后端会在下一个轮询周期应用新频率' })
+    await loadAudit()
   } catch (err) {
     app.toast({ kind: 'danger', title: '设置没有保存', desc: err instanceof Error ? err.message : '' })
   }
@@ -361,21 +440,22 @@ onBeforeRouteLeave(async () => {
 
         <Panel id="sec-audit" title="审计日志" code="AUDIT" :icon="ClipboardList">
           <template #actions>
-            <button class="btn btn-ghost btn-sm" @click="loadAudit"><RefreshCw :size="14" />刷新</button>
+            <button class="btn btn-ghost btn-sm" @click="refreshAudit"><RefreshCw :size="14" />刷新</button>
           </template>
           <p class="fs-sm muted" style="margin: 0 0 8px">{{ auditHint }}</p>
           <div class="table-wrap">
             <table class="table">
-              <thead><tr><th>时间</th><th>操作人</th><th>动作</th><th>机台</th><th>audit_id</th></tr></thead>
+              <thead><tr><th>时间</th><th>操作人</th><th>说明</th><th>动作</th><th>机台</th><th>audit_id</th></tr></thead>
               <tbody>
                 <tr v-for="row in auditRows" :key="row.audit_id">
                   <td class="num fs-sm">{{ dt(row.time) }}</td>
                   <td class="mono fs-xs">{{ row.actor }}</td>
+                  <td class="fs-sm">{{ auditNote(row) }}</td>
                   <td class="mono fs-xs">{{ row.action }}</td>
                   <td class="mono">{{ row.machine_id || '—' }}</td>
                   <td class="mono fs-xs">{{ row.audit_id }}</td>
                 </tr>
-                <tr v-if="!auditRows.length"><td colspan="5" class="c muted" style="height: 64px">还没有写操作审计</td></tr>
+                <tr v-if="!auditRows.length"><td colspan="6" class="c muted" style="height: 64px">还没有写操作审计</td></tr>
               </tbody>
             </table>
           </div>

@@ -7,6 +7,7 @@ class AuditItemOut(BaseModel):
     actor: str
     action: str
     machine_id: str
+    note: str
     request: dict
     result: dict
 
