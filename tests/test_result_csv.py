@@ -51,14 +51,19 @@ class ResultCsvTests(unittest.TestCase):
         self.assertNotIn("Temp_", header)
         self.assertNotIn("run_id", header)
         self.assertIn("model,serial_number", header)
-        self.assertIn("temp_t0", header)
-        self.assertIn("temp_t1", header)
-        self.assertIn("temp_t14", header)
-        self.assertIn("temp_ambient", header)
-        self.assertIn("delta_t0_t1", header)
-        self.assertIn("delta_t1_t2", header)
-        self.assertIn("force_3", header)
-        self.assertIn("thermal_resistance", header)
+        self.assertIn("temp_t0 (℃)", header)
+        self.assertIn("temp_t1 (℃)", header)
+        self.assertIn("temp_t14 (℃)", header)
+        self.assertIn("temp_ambient (℃)", header)
+        self.assertIn("delta_t0_t1 (℃)", header)
+        self.assertIn("delta_t1_t2 (℃)", header)
+        self.assertIn("force_3 (g)", header)
+        self.assertIn("power_w (W)", header)
+        self.assertIn("thermal_resistance (℃/W)", header)
+        self.assertIn("elapsed_s (s)", header)
+        self.assertIn("70.00", text)
+        self.assertIn("2.50", text)
+        self.assertIn("6.10", text)
         self.assertNotIn("temp_t2,", header)
         self.assertIn("tb158", text)
         self.assertIn("fail", text)
@@ -77,7 +82,7 @@ class ResultCsvTests(unittest.TestCase):
         body, media, name = build_result_export([_row(), later], {}, {}, "products")
         text = body.decode("utf-8-sig")
         self.assertEqual(media, "text/csv; charset=utf-8")
-        self.assertEqual(name, "products.csv")
+        self.assertRegex(name, r"^products_\d{4}-\d{2}-\d{2}\.csv$")
         self.assertEqual(text.count("\n"), 3)
 
     def test_batch_group_is_one_file_named_for_the_batch(self):
@@ -92,14 +97,15 @@ class ResultCsvTests(unittest.TestCase):
 
     def test_raw_filename_and_points(self):
         name = raw_filename("B-1", "SN/1", 1762017000000, "R1")
-        self.assertTrue(name.startswith("B-1_SN_1_"))
-        self.assertTrue(name.endswith(".csv"))
+        self.assertRegex(name, r"^B-1_SN_1_\d{8}-\d{6}_\d{4}-\d{2}-\d{2}\.csv$")
         points = points_from_body({
-            "points": [{"t_s": 1, "temps": [{"channel": "T2", "value": 30}], "power_w": 3}],
+            "points": [{"t_s": 1, "temps": [{"channel": "T2", "value": 30.126}], "power_w": 3}],
         })
         text = render_raw(points)
-        self.assertTrue(text.startswith("t_s,temp_t2,power_w"))
-        self.assertIn("30", text)
+        self.assertTrue(text.startswith("t_s (s),temp_t2 (℃),power_w (W)"))
+        self.assertIn("30.13", text)
+        self.assertIn("3.00", text)
+        self.assertIn("1.00", text)
 
 
 if __name__ == "__main__":
