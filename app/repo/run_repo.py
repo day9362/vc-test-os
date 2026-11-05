@@ -133,6 +133,23 @@ class RunRepo:
     async def get(self, run_id: str) -> RunOrm | None:
         return await self.session.get(RunOrm, run_id)
 
+    async def latest_by_serial(self, serials: list[str], fleet_ids: list[str] | None = None) -> dict[str, RunOrm]:
+        wanted = [serial for serial in dict.fromkeys(serials) if serial]
+        if not wanted:
+            return {}
+        stmt = (
+            select(RunOrm)
+            .where(RunOrm.serial_number.in_(wanted), RunOrm.status != "RUNNING")
+            .order_by(RunOrm.ended_at.desc(), RunOrm.run_id.desc())
+        )
+        if fleet_ids:
+            stmt = stmt.where(RunOrm.machine_id.in_(fleet_ids))
+        found: dict[str, RunOrm] = {}
+        for row in (await self.session.execute(stmt)).scalars():
+            if row.serial_number and row.serial_number not in found:
+                found[row.serial_number] = row
+        return found
+
     async def list_for_export(self, batch_id: str | None, start: int | None, end: int | None, exclude_seed: bool = False, fleet_ids: list[str] | None = None) -> list[RunOrm]:
         stmt = self._filtered(None, batch_id, None, False, None, None, start, end, exclude_seed, fleet_ids)
         return list(

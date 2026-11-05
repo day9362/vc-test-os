@@ -72,6 +72,14 @@ class ResultCsvTests(unittest.TestCase):
         self.assertEqual(name, "results.zip")
         self.assertTrue(body.startswith(b"PK"))
 
+    def test_products_group_is_one_file(self):
+        later = _row(ended_at=1762017000000 + 86_400_000, serial_number="SN-2")
+        body, media, name = build_result_export([_row(), later], {}, {}, "products")
+        text = body.decode("utf-8-sig")
+        self.assertEqual(media, "text/csv; charset=utf-8")
+        self.assertEqual(name, "products.csv")
+        self.assertEqual(text.count("\n"), 3)
+
     def test_batch_group_is_one_file_named_for_the_batch(self):
         _, media, name = build_result_export([_row(), _row(serial_number="SN-2")], {}, {}, "batch")
         self.assertEqual(media, "text/csv; charset=utf-8")

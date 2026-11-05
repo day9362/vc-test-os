@@ -458,6 +458,11 @@ function exportPickedRaw() {
   return downloadFile(`/export/raw?${query}`, '已导出过程数据')
 }
 
+function exportPickedProducts() {
+  const query = pickedRuns.value.map((id) => `run_id=${encodeURIComponent(id)}`).join('&')
+  return downloadFile(`/export/products.csv?${query}`, '已导出产品数据')
+}
+
 function exportOneRaw(runId: string) {
   return downloadFile(`/export/raw?run_id=${encodeURIComponent(runId)}`, '已导出过程数据')
 }
@@ -577,6 +582,7 @@ onBeforeUnmount(() => {
 
       <Panel title="实时测试记录" code="RUNS · STREAM" :icon="ListChecks" flush>
         <template #actions>
+          <button class="btn btn-sm" :disabled="!pickedRuns.length || exporting" @click="exportPickedProducts" v-tip="'每个勾选产品只导出最后一笔结果'">导出产品数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
           <button class="btn btn-sm" :disabled="!pickedRuns.length || exporting" @click="exportPickedRaw"><Download :size="14" />导出过程数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
           <button class="btn btn-ghost btn-sm" @click="tab = 'runs'">全部记录<ArrowRight :size="14" /></button>
         </template>
@@ -666,6 +672,7 @@ onBeforeUnmount(() => {
           <button v-for="o in (['all', 'pass', 'fail', 'none'] as const)" :key="o" :aria-pressed="rf.passed === o" @click="rf.passed = o">{{ { all: '全部', pass: '合格', fail: '不合格', none: '中止 / 故障' }[o] }}</button>
         </div>
         <span class="grow" />
+        <button class="btn" :disabled="!pickedRuns.length || exporting" @click="exportPickedProducts" v-tip="'每个勾选产品只导出最后一笔结果'"><Download :size="16" />导出产品数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
         <button class="btn" :disabled="!pickedRuns.length || exporting" @click="exportPickedRaw"><Download :size="16" />导出过程数据{{ pickedRuns.length ? `（${pickedRuns.length}）` : '' }}</button>
         <span class="fs-xs muted">显示最近 {{ runList.length }} 条</span>
       </div>
