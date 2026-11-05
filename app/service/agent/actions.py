@@ -7,7 +7,7 @@ from uuid import uuid4
 from app.core.config import settings
 from app.core.errors import AppError
 
-WRITE_TOOLS = {"vc_plan", "vc_operate", "vc_quality"}
+WRITE_TOOLS = {"vc_machine", "vc_plan", "vc_board", "vc_alarm", "vc_report"}
 
 
 def tool_name(name: str) -> str:

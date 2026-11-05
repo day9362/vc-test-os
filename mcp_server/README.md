@@ -22,15 +22,23 @@ MCP 地址：`http://127.0.0.1:8100/mcp/`
 
 ## 身份
 
-| 请求头 | 可见工具 |
-| --- | --- |
-| `Authorization: Bearer <用户 JWT>` | 全部 5 个 |
-| 无令牌 | 只有 `vc_line`、`vc_data` |
+| 请求头 | 可见工具 | 能做的事 |
+| --- | --- | --- |
+| `Authorization: Bearer <用户 JWT>` | 全部 6 个 | 查询和写动作 |
+| 无令牌 | 全部 6 个 | 只能查询 |
 
 ## 工具
 
-- `vc_line` / `vc_data`：只读
-- `vc_plan` / `vc_operate` / `vc_quality`：写；中、高风险返回 `APPROVAL_REQUIRED`，由页面批准后带 `confirm_id` + HMAC `approval` 再调一次
+按实体划分，动作写在 `action` 里：
+
+- `vc_machine`：机台。含启停、上方案（`dispatch`）、仿真、补偿
+- `vc_plan`：方案的查询、起草、发布
+- `vc_board`：板子和批次。拉新是 `create_batch`
+- `vc_run`：测试记录，只查
+- `vc_alarm`：告警
+- `vc_report`：报告
+
+中、高风险写动作返回 `APPROVAL_REQUIRED`，由页面批准后带 `confirm_id` + HMAC `approval` 再调一次。明细见 `DESIGN.md`。
 
 ## 测试
 

@@ -20,7 +20,7 @@ QualityAction = Literal[
 ]
 
 
-async def vc_quality(
+async def run_quality(
     action: QualityAction,
     alarm_ids: list[str] | None = None,
     alarm_id: str | None = None,
@@ -42,6 +42,8 @@ async def vc_quality(
     summary_lines: list[str] | None = None,
     confirm_id: str | None = None,
     approval: str | None = None,
+    *,
+    tool: str,
 ) -> dict:
     """VC-TestOS 质量处置（写）：告警处理、通道补偿、批次报告。
 
@@ -87,7 +89,7 @@ async def vc_quality(
     async def execute(values: dict, idem: str | None) -> dict:
         return await _run(c, action, values, idem)
 
-    return await guarded(c, "vc_quality", action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
+    return await guarded(c, tool, action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
 
 
 async def _preview(c: Ctx, action: str, args: dict):

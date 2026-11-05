@@ -29,7 +29,7 @@ OperateAction = Literal[
 MACHINE_ACTIONS = {"power_on": "power-on", "power_off": "power-off", "reset": "reset", "maintenance": "maintenance"}
 
 
-async def vc_operate(
+async def run_operate(
     action: OperateAction,
     machine_ids: list[str] | None = None,
     machine_id: str | None = None,
@@ -58,6 +58,8 @@ async def vc_operate(
     kind: str | None = None,
     confirm_id: str | None = None,
     approval: str | None = None,
+    *,
+    tool: str,
 ) -> dict:
     """VC-TestOS 设备与生产操作（写）。中、高风险操作会先返回 APPROVAL_REQUIRED，由用户在页面批准后才执行；不要自己重复调用。
 
@@ -80,9 +82,9 @@ async def vc_operate(
     - production_stop：停止连续生产；不给 batch_id 时停止当前生产。需批准。
     仿真（仅仿真数据源，只在用户明确要求时调用）：
     - sim_speed：改仿真倍率 speed，必须给出 machine_ids，不会改全部机台。只缩短等待，不改变温度曲线。需批准。
-    - sim_scenario：对 machine_id 应用场景 name。需批准。先用 vc_data sim_catalog 查 name。
-    - sim_fault：对 machine_id 注入故障 kind，可给 slot_index。需批准。先用 vc_data sim_catalog 查 kind。
-    读数里 99999 和 9999 表示接触不良，-1 表示采集无应答，-2 表示回答无法解析。开测后用 vc_data 看进度，不要等测试结束。同意一次只覆盖这一次。
+    - sim_scenario：对 machine_id 应用场景 name。需批准。先用 vc_machine 的 sim_catalog 查 name。
+    - sim_fault：对 machine_id 注入故障 kind，可给 slot_index。需批准。先用 vc_machine 的 sim_catalog 查 kind。
+    读数里 99999 和 9999 表示接触不良，-1 表示采集无应答，-2 表示回答无法解析。开测后用 vc_run 看进度，不要等测试结束。同意一次只覆盖这一次。
     confirm_id、approval 只由页面批准后使用，不要自己填写。
     """
     c = ctx()
@@ -122,7 +124,7 @@ async def vc_operate(
     async def execute(values: dict, idem: str | None) -> dict:
         return await _run(c, action, values, idem)
 
-    return await guarded(c, "vc_operate", action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
+    return await guarded(c, tool, action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
 
 
 # ---------- 批准前检查 ----------
@@ -145,7 +147,7 @@ def _targets(args: dict) -> list[str]:
 def _unknown(ids: list[str], fleet: dict) -> dict | None:
     missing_ids = [item for item in ids if item not in fleet]
     if missing_ids:
-        return fail(f"没有这些机台：{join_ids(missing_ids)}。", "NOT_FOUND", status=404, hints=["用 vc_line machines 查看机台编号"])
+        return fail(f"没有这些机台：{join_ids(missing_ids)}。", "NOT_FOUND", status=404, hints=["用 vc_machine 的 machines 查看机台编号"])
     return None
 
 
@@ -477,7 +479,7 @@ async def _batch_preview(c: Ctx, args: dict):
         return from_reply(reply)
     names = {item.get("model") for item in reply.body or [] if isinstance(item, dict)}
     if names and model not in names:
-        return fail(f"没有型号 {model}。", "VALIDATION_ERROR", status=422, hints=["用 vc_data models 查看已有型号"])
+        return fail(f"没有型号 {model}。", "VALIDATION_ERROR", status=422, hints=["用 vc_board 的 models 查看已有型号"])
     stored = {
         "model": model,
         "count": count,

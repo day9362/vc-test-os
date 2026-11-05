@@ -3,14 +3,15 @@ from typing import Literal
 from app.approval import Preview, guarded, pick
 from app.config import settings
 from app.models import PlanInput
-from app.result import fail, from_reply, missing, ok
+from app.result import bad, fail, from_reply, missing, ok
 from app.state import Ctx, ctx
+from app.tools.data import vc_data
 
-PlanAction = Literal["from_text", "validate", "save_draft", "delete_draft", "publish", "dispatch"]
+PlanAction = Literal["plans", "plan", "from_text", "validate", "save_draft", "delete_draft", "publish"]
 
 
-async def vc_plan(
-    action: PlanAction,
+async def run_plan(
+    action: str,
     text: str | None = None,
     plan: PlanInput | None = None,
     plan_id: str | None = None,
@@ -18,6 +19,8 @@ async def vc_plan(
     machine_ids: list[str] | None = None,
     confirm_id: str | None = None,
     approval: str | None = None,
+    *,
+    tool: str,
 ) -> dict:
     """VC-TestOS 测试方案的生成、校验、保存和发布（写）。查方案用 vc_data 的 plans / plan。
 
@@ -46,7 +49,51 @@ async def vc_plan(
     async def execute(values: dict, idem: str | None) -> dict:
         return await _run(c, action, values, idem)
 
-    return await guarded(c, "vc_plan", action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
+    return await guarded(c, tool, action, args, confirm_id=confirm_id, approval=approval, preview=preview, execute=execute)
+
+
+async def vc_plan(
+    action: PlanAction,
+    text: str | None = None,
+    plan: PlanInput | None = None,
+    plan_id: str | None = None,
+    version: int | None = None,
+    q: str | None = None,
+    draft: bool | None = None,
+    detail: bool = False,
+    cursor: str | None = None,
+    limit: int = 20,
+    confirm_id: str | None = None,
+    approval: str | None = None,
+) -> dict:
+    """VC-TestOS 测试方案。查询、起草、校验、保存、删除、发布都是这个工具的 action。上到机台用 vc_machine 的 dispatch。
+
+    取值：2.5 W 常配 100 g，3.5 W 常配 120 g。时长 1–600 秒，功率 0.1–10 W，压紧力 20–300 g。判定项温差写 Temp_T0-T1。
+
+    action:
+    - plans：方案列表。q 按名称或编号，draft=true 只看草稿，false 只看已发布。
+    - plan：方案详情，要 plan_id，可给 version。
+    - from_text：把自然语言 text 整理成草稿。直接执行。
+    - validate：校验 plan。直接执行。
+    - save_draft：保存 plan；带 plan_id 表示更新这份草稿。直接执行。
+    - delete_draft：删除草稿，要 plan_id。需批准。
+    - publish：把 plan 发布为新版本（带 plan_id 表示在该方案下加版本），会先自动校验。需批准。发布不会自动装到机台。
+    confirm_id、approval 只由页面批准后使用，不要自己填写。
+    """
+    if action in {"plans", "plan"}:
+        return await vc_data(action, plan_id=plan_id, version=version, q=q, draft=draft, detail=detail, cursor=cursor, limit=limit)
+    if action == "dispatch":
+        return bad("上方案用 vc_machine，action 填 dispatch。", "给出 plan_id、version 和 machine_ids。")
+    return await run_plan(
+        action,
+        text=text,
+        plan=plan,
+        plan_id=plan_id,
+        version=version,
+        confirm_id=confirm_id,
+        approval=approval,
+        tool="vc_plan",
+    )
 
 
 async def _run(c: Ctx, action: str, values: dict, idem: str | None) -> dict:
@@ -118,7 +165,7 @@ async def _publish_preview(c: Ctx, args: dict):
         return checked
     target = f"在 {args['plan_id']} 下发布新版本" if args.get("plan_id") else "发布为新方案"
     sentence = f"把方案「{plan.get('name')}」{target}（{plan.get('power_w')} W、{plan.get('force_g')} g、{plan.get('duration_s')} 秒）"
-    return Preview(sentence, ["发布后机器上的方案还没变，要下发再用 dispatch"], precheck=checked.get("data"))
+    return Preview(sentence, ["发布后机器上的方案还没变，要另外上方案才会装到机台"], precheck=checked.get("data"))
 
 
 def _delete_preview(args: dict):

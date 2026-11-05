@@ -14,18 +14,18 @@ class ReadonlyGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_readonly_sees_read_tools_only(self):
         async with Client(build_mcp()) as client:
             names = sorted(tool.name for tool in await client.list_tools())
-        self.assertEqual(names, ["vc_data", "vc_line"])
+        self.assertEqual(names, ["vc_alarm", "vc_board", "vc_machine", "vc_plan", "vc_report", "vc_run"])
 
-    async def test_readonly_cannot_call_write_tool(self):
+    async def test_readonly_cannot_call_write_action(self):
         async with Client(build_mcp()) as client:
             with self.assertRaises(ToolError):
-                await client.call_tool("vc_quality", {"action": "ack", "alarm_ids": ["A1"]})
+                await client.call_tool("vc_alarm", {"action": "ack", "alarm_ids": ["A1"]})
 
     async def test_user_sees_all_tools(self):
         force_identity(Identity("user-token"))
         async with Client(build_mcp()) as client:
             names = sorted(tool.name for tool in await client.list_tools())
-        self.assertEqual(names, ["vc_data", "vc_line", "vc_operate", "vc_plan", "vc_quality"])
+        self.assertEqual(names, ["vc_alarm", "vc_board", "vc_machine", "vc_plan", "vc_report", "vc_run"])
 
 
 if __name__ == "__main__":
