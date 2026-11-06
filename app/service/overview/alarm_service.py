@@ -33,6 +33,14 @@ class AlarmService:
         rows, next_cursor = await self.alarms.page(acked, machine_id, level, cursor, limit, fleet_ids)
         return AlarmPageOut(items=[alarm_out(alarm_entity(row)) for row in rows], next_cursor=next_cursor)
 
+    async def get_alarm(self, alarm_id: str) -> AlarmOut:
+        row = await self._require(alarm_id)
+        if settings.cluster_base_url and row.machine_id:
+            fleet = fleet_machine_ids() or await refresh_fleet()
+            if fleet and row.machine_id not in fleet:
+                raise AppError(404, "NOT_FOUND", f"告警 {alarm_id} 不存在")
+        return alarm_out(alarm_entity(row))
+
     async def acknowledge(self, alarm_id: str, user: UserEntity, idempotency_key: str | None) -> AlarmActionOut:
         cached = await self._cached(idempotency_key)
         if cached:

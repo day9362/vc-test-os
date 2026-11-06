@@ -45,6 +45,9 @@ const m = computed(() => machines.value.find((item) => item.machine_id === cur.v
 const dis = computed(() => m.value?.comm_status === 'DISCONNECTED')
 const shown = computed(() => machines.value.filter((item) => item.machine_id.toLowerCase().includes(kw.value.toLowerCase())))
 watch(cur, (id) => { if (id) router.replace({ query: { ...route.query, m: id } }) })
+function openAlarm(id: string) {
+  router.push({ path: '/overview', query: { alarm: id } })
+}
 
 const bias = ref<BiasItem[]>([])
 const threshold = ref(0.15)
@@ -400,7 +403,7 @@ function channels(rows: CompItem[]) {
             <table class="table">
               <thead><tr><th>时间</th><th>级别</th><th>来源</th><th>代码</th><th>槽位</th><th>描述</th><th>状态</th></tr></thead>
               <tbody>
-                <tr v-for="alarm in alarms" :key="alarm.id">
+                <tr v-for="alarm in alarms" :key="alarm.id" class="clickable" tabindex="0" @click="openAlarm(alarm.id)" @keydown.enter="openAlarm(alarm.id)">
                   <td class="num fs-sm">{{ dt(alarm.time) }}</td>
                   <td><span class="tag" :class="LV[alarm.level][0]">{{ LV[alarm.level][1] }}</span></td>
                   <td class="fs-sm">{{ alarm.source }}</td>
