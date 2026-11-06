@@ -135,12 +135,21 @@ def _rc_dt(payload: dict, result: dict) -> tuple[float | None, float | None]:
     return rc, dt
 
 
+def _result_t(result: object) -> float | None:
+    if isinstance(result, dict) and isinstance(result.get("t_s"), (int, float)):
+        return float(result["t_s"])
+    return None
+
+
 def _apply_payload(row: RunOrm, payload: dict, *, fill_result: bool) -> None:
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    if fill_result and result:
+    stored_t = _result_t(row.result if isinstance(row.result, dict) else None)
+    incoming_t = _result_t(result)
+    replace = bool(result) and not (stored_t is not None and (incoming_t is None or incoming_t < stored_t))
+    if fill_result and replace:
         result = {**result, "deltas": _deltas(result) or result.get("deltas") or {}}
         row.result = result
-    rc, dt = _rc_dt(payload, result or row.result or {})
+    rc, dt = _rc_dt(payload, (row.result if not replace else result) or row.result or {})
     row.machine_id = str(payload.get("machine_id") or row.machine_id)
     row.slot_index = int(payload.get("slot_index") or row.slot_index or 0)
     row.serial_number = str(payload.get("serial_number") or row.serial_number or "")
@@ -150,9 +159,9 @@ def _apply_payload(row: RunOrm, payload: dict, *, fill_result: bool) -> None:
     row.passed = payload.get("passed") if "passed" in payload else row.passed
     row.fail_items = list(payload.get("fail_items") or row.fail_items or [])
     row.keep_result = True if payload.get("keep_result") is None else bool(payload["keep_result"])
-    if rc is not None:
+    if replace and rc is not None:
         row.rc = rc
-    if dt is not None:
+    if replace and dt is not None:
         row.dt01 = dt
     if payload.get("batch_id"):
         row.batch_id = str(payload["batch_id"])
@@ -365,6 +374,7 @@ async def sync_samples(session: AsyncSession) -> None:
             if point["t_s"] <= since:
                 continue
             session.add(RunSampleOrm(run_id=run_id, t_s=point["t_s"], t0=point["t0"], t1=point["t1"], ta=point["ta"], power_w=point["power_w"]))
+    await settle_recent(session)
 
 
 async def _fetch_sample_body(run_id: str, since: float, incremental: bool):
@@ -374,6 +384,57 @@ async def _fetch_sample_body(run_id: str, since: float, incremental: bool):
     except Exception:
         return run_id, since, incremental, None
     return run_id, since, incremental, _sample_points(body)
+
+
+def _sample_rows(body: object) -> list[dict]:
+    if isinstance(body, dict):
+        raw = body.get("samples") or body.get("points") or body.get("items") or []
+        return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    if isinstance(body, list):
+        return [item for item in body if isinstance(item, dict)]
+    return []
+
+
+async def settle_recent(session: AsyncSession, *, limit: int = 4) -> None:
+    """把最近测完、结果仍停在中途的记录，改成方案时长那一点。过程曲线没到时长的一并补上。"""
+    from app.models.orm.test_plan import TestPlanOrm
+    from app.service.runs.result_csv import choose_final_sample
+
+    cutoff = now_ms() - 6 * 60 * 60 * 1000
+    found = (await session.execute(
+        select(RunOrm, TestPlanOrm.duration_s)
+        .join(TestPlanOrm, (TestPlanOrm.plan_id == RunOrm.plan_id) & (TestPlanOrm.version == RunOrm.plan_version))
+        .where(RunOrm.status == "COMPLETED", RunOrm.ended_at >= cutoff)
+        .order_by(RunOrm.ended_at.desc())
+        .limit(40)
+    )).all()
+    settled = 0
+    for row, duration in found:
+        if settled >= limit:
+            return
+        current = _result_t(row.result if isinstance(row.result, dict) else None)
+        if current is not None and current >= float(duration) - 1:
+            continue
+        try:
+            body = await asyncio.to_thread(_get, f"/runs/{row.run_id}/samples")
+        except Exception:
+            continue
+        samples = _sample_rows(body)
+        chosen = choose_final_sample(samples, float(duration))
+        if chosen is None:
+            continue
+        chosen_t = _result_t(chosen)
+        if chosen_t is None or (current is not None and chosen_t < current):
+            continue
+        if chosen_t < float(duration) - 1:
+            continue
+        _apply_payload(row, {"result": chosen, "status": row.status}, fill_result=True)
+        have = float((await session.execute(select(func.max(RunSampleOrm.t_s)).where(RunSampleOrm.run_id == row.run_id))).scalar() or 0)
+        for point in _sample_points(body):
+            if point["t_s"] <= have:
+                continue
+            session.add(RunSampleOrm(run_id=row.run_id, t_s=point["t_s"], t0=point["t0"], t1=point["t1"], ta=point["ta"], power_w=point["power_w"]))
+        settled += 1
 
 
 async def fill_run_samples(session: AsyncSession, run_id: str) -> None:
