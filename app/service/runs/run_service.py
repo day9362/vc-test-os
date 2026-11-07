@@ -168,6 +168,31 @@ class RunService:
         rows = await self.runs.list_for_export(batch_id, start, end, bool(settings.cluster_base_url), fleet_machine_ids() or None)
         return build_result_export(rows, await self._batch_models(), await self._plan_durations(), group)
 
+    async def export_products(self, run_ids: list[str]) -> tuple[bytes, str, str]:
+        await self._ensure_fleet()
+        fleet = fleet_machine_ids()
+        ids = list(dict.fromkeys(run_ids))
+        if not ids:
+            raise AppError(400, "BAD_REQUEST", "先勾选要导出的产品")
+        if len(ids) > 200:
+            raise AppError(400, "BAD_REQUEST", "一次最多导出 200 个产品")
+        picked = []
+        for run_id in ids:
+            row = await self.runs.get(run_id)
+            if row is None or (fleet and row.machine_id not in fleet):
+                raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
+            picked.append(row)
+        latest = await self.runs.latest_by_serial([row.serial_number for row in picked if row.serial_number], fleet or None)
+        chosen = []
+        seen: set[str] = set()
+        for row in picked:
+            key = row.serial_number or row.run_id
+            if key in seen:
+                continue
+            seen.add(key)
+            chosen.append(latest.get(row.serial_number, row) if row.serial_number else row)
+        return build_result_export(chosen, await self._batch_models(), await self._plan_durations(), "products")
+
     async def export_raw(self, run_ids: list[str], batch_id: str | None) -> tuple[bytes, str, str]:
         await self._ensure_fleet()
         fleet = fleet_machine_ids()

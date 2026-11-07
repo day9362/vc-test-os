@@ -35,9 +35,13 @@ _AMBIENT = {"ta", "ambient"}
 
 
 def build_result_export(rows: list, models: dict[str, str], durations: dict[tuple[str, int], int], group: str) -> tuple[bytes, str, str]:
-    if group not in {"day", "batch"}:
+    if group not in {"day", "batch", "products"}:
         raise ValueError(group)
     built = [_result_row(row, models, durations) for row in rows]
+    if group == "products":
+        for item in built:
+            item.pop("_day", None)
+        return _render(built).encode("utf-8-sig"), "text/csv; charset=utf-8", "products.csv"
     if group == "batch":
         name = _safe(str(getattr(rows[0], "batch_id", "") or "results")) + ".csv" if rows else "results.csv"
         text = _render(built)

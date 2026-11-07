@@ -35,6 +35,16 @@ async def export_production_csv(
     return _file(body, media, filename)
 
 
+@router.get("/export/products.csv")
+async def export_products(
+    run_id: list[str] = Query(default_factory=list),
+    _: object = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    body, media, filename = await RunService(session).export_products(run_id)
+    return _file(body, media, filename)
+
+
 @router.get("/export/raw")
 async def export_raw(
     run_id: list[str] = Query(default_factory=list),
