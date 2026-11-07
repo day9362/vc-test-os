@@ -50,7 +50,7 @@ def _channel_key(name: str) -> tuple:
     return (2, 0, name)
 
 
-def estimate_channel_bias(machine_id: str, pieces: list[tuple[str, int, dict | None]]) -> ChannelBiasOut:
+def estimate_channel_bias(machine_id: str, pieces: list[tuple[str, int, dict | None]], threshold_c: float | None = None) -> ChannelBiasOut:
     grouped: dict[str, list[tuple[int, dict[str, float]]]] = {}
     for mid, ended_at, result in pieces:
         temps = temps_of(result)
@@ -68,8 +68,9 @@ def estimate_channel_bias(machine_id: str, pieces: list[tuple[str, int, dict | N
         if buckets:
             means[mid] = {channel: sum(vals) / len(vals) for channel, vals in buckets.items()}
     rows = grouped.get(machine_id, [])
+    limit = settings.drift_c if threshold_c is None else threshold_c
     if machine_id not in means:
-        return ChannelBiasOut(measured_at=0, golden_model=GOLDEN_MODEL, samples=0, threshold_c=settings.drift_c, items=[])
+        return ChannelBiasOut(measured_at=0, golden_model=GOLDEN_MODEL, samples=0, threshold_c=limit, items=[])
     items = []
     for channel in sorted(means[machine_id], key=_channel_key):
         votes = [row[channel] for row in means.values() if channel in row]
@@ -78,6 +79,6 @@ def estimate_channel_bias(machine_id: str, pieces: list[tuple[str, int, dict | N
         measured_at=max(ended for ended, _temps in rows),
         golden_model=GOLDEN_MODEL,
         samples=len(rows),
-        threshold_c=settings.drift_c,
+        threshold_c=limit,
         items=items,
     )
