@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 from time import monotonic
 
-import httpx
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.service.settings.cluster_policy import request_timeout, sync_send
 from app.models.orm.run import RunOrm, RunSampleOrm
 
 _cached_fleet: list[str] = []
@@ -17,37 +17,30 @@ _fleet_fail_at = 0.0
 _FLEET_FAIL_TTL_S = 5.0
 _metrics_task: asyncio.Task | None = None
 _skip_metrics: set[str] = set()
+_sample_miss_at: dict[str, float] = {}
 
 
-def _client(timeout: float | None = None) -> httpx.Client:
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
-    return httpx.Client(
-        timeout=timeout if timeout is not None else max(settings.cluster_timeout_s, 20),
-        follow_redirects=True,
-        trust_env=False,
-        headers=headers,
-    )
+def _headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
 
 
 def _get(path: str) -> dict | list | None:
     base = settings.cluster_base_url.rstrip("/")
     if not base:
         return None
-    with _client() as client:
-        res = client.get(f"{base}{path}")
-        res.raise_for_status()
-        return res.json()
+    res = sync_send("GET", f"{base}{path}", timeout=request_timeout(), headers=_headers())
+    res.raise_for_status()
+    return res.json()
 
 
 def _get_fleet(path: str) -> dict | list | None:
-    """机台列表过滤用：短超时，避免 Agent 预览 /machines 时被集群拖死。"""
+    """机台列表过滤用：不超过设置的超时，也不超过 5 秒，避免 Agent 预览被集群拖死。"""
     base = settings.cluster_base_url.rstrip("/")
     if not base:
         return None
-    with _client(timeout=min(float(settings.cluster_timeout_s), 5.0)) as client:
-        res = client.get(f"{base}{path}")
-        res.raise_for_status()
-        return res.json()
+    res = sync_send("GET", f"{base}{path}", timeout=min(request_timeout(), 5.0), headers=_headers())
+    res.raise_for_status()
+    return res.json()
 
 
 def fleet_machine_ids() -> list[str]:
@@ -327,6 +320,60 @@ def _sample_points(body: object) -> list[dict]:
             "power_w": float(item.get("power_w") or 0),
         })
     return points
+
+
+async def sync_samples(session: AsyncSession) -> None:
+    """按过程曲线的间隔拉取。正在测试的记录按已有时间增量追加，缺曲线的已结束记录补一份。"""
+    if not settings.cluster_base_url:
+        return
+    running = list((await session.execute(select(RunOrm).where(RunOrm.status == "RUNNING"))).scalars().all())
+    seen = {row.run_id for row in running}
+    pending = []
+    for row in running:
+        since = float((await session.execute(select(func.max(RunSampleOrm.t_s)).where(RunSampleOrm.run_id == row.run_id))).scalar() or 0)
+        pending.append((row.run_id, since, True))
+    missing = list((await session.execute(
+        select(RunOrm)
+        .where(RunOrm.status.in_(("COMPLETED", "ABORTED", "FAULT")))
+        .where(~RunOrm.run_id.in_(select(RunSampleOrm.run_id)))
+        .order_by(RunOrm.ended_at.desc())
+        .limit(20)
+    )).scalars().all())
+    now = monotonic()
+    picked = 0
+    for row in missing:
+        if row.run_id in seen or now - _sample_miss_at.get(row.run_id, 0) < 60:
+            continue
+        pending.append((row.run_id, 0.0, False))
+        picked += 1
+        if picked == 4:
+            break
+    fetched = await asyncio.gather(*(_fetch_sample_body(run_id, since, incremental) for run_id, since, incremental in pending))
+    for run_id, since, incremental, points in fetched:
+        if points is None:
+            continue
+        if not incremental:
+            if not points:
+                _sample_miss_at[run_id] = monotonic()
+                continue
+            existing = (await session.execute(select(RunSampleOrm.id).where(RunSampleOrm.run_id == run_id).limit(1))).first()
+            if existing:
+                continue
+            await session.execute(delete(RunSampleOrm).where(RunSampleOrm.run_id == run_id))
+            since = -1
+        for point in points:
+            if point["t_s"] <= since:
+                continue
+            session.add(RunSampleOrm(run_id=run_id, t_s=point["t_s"], t0=point["t0"], t1=point["t1"], ta=point["ta"], power_w=point["power_w"]))
+
+
+async def _fetch_sample_body(run_id: str, since: float, incremental: bool):
+    path = f"/runs/{run_id}/samples?since={since}" if incremental else f"/runs/{run_id}/samples"
+    try:
+        body = await asyncio.to_thread(_get, path)
+    except Exception:
+        return run_id, since, incremental, None
+    return run_id, since, incremental, _sample_points(body)
 
 
 async def fill_run_samples(session: AsyncSession, run_id: str) -> None:

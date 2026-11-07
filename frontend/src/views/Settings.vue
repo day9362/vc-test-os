@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import {
-  Bot, CheckCircle2, ClipboardList, Cloud, Database, Eye, EyeOff, FlaskConical, Gauge, Loader2, PlugZap, RefreshCw, RotateCcw, Save, Scale, Server, XCircle, Zap,
+  Bot, CheckCircle2, ClipboardList, Cloud, Eye, EyeOff, FlaskConical, Gauge, Loader2, PlugZap, RefreshCw, RotateCcw, Save, Scale, Server, XCircle, Zap,
 } from 'lucide-vue-next'
 import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
@@ -21,7 +21,6 @@ const SECTIONS = [
   { id: 'source', label: '数据源', icon: Server },
   { id: 'jobs', label: '同步频率', icon: RefreshCw },
   { id: 'sim', label: '仿真平台', icon: FlaskConical },
-  { id: 'storage', label: '本地存储', icon: Database },
   { id: 'ai', label: 'AI 接入', icon: Bot },
   { id: 'rules', label: '判定与告警', icon: Scale },
   { id: 'audit', label: '审计日志', icon: ClipboardList },
@@ -231,11 +230,13 @@ onBeforeRouteLeave(async () => {
             </div>
             <div class="field">
               <label for="to">请求超时</label>
-              <div class="unit-in"><input id="to" v-model.number="d.cluster.timeout_s" class="input num" type="number" min="1" max="60" /><span>s</span></div>
+              <div class="unit-in"><input id="to" v-model.number="d.cluster.timeout_s" class="input num" type="number" min="1" max="8" /><span>s</span></div>
+              <span class="hint">1–8 秒。槽位同步最多 4 秒</span>
             </div>
             <div class="field">
               <label for="rt">失败重试</label>
               <div class="unit-in"><input id="rt" v-model.number="d.cluster.retries" class="input num" type="number" min="0" max="5" /><span>次</span></div>
+              <span class="hint">超时、连不上或集群 5xx 时重试，最多 5 次</span>
             </div>
             <div class="field">
               <label>机台返回 503（通信断开）时</label>
@@ -307,17 +308,6 @@ onBeforeRouteLeave(async () => {
               <option v-for="f in faults" :key="f.kind" :value="f.kind">{{ f.kind }} · {{ f.layer }}</option>
             </select>
             <button class="btn" :disabled="d.source !== 'sim'" @click="inject('fault')"><Zap :size="16" />注入故障</button>
-          </div>
-        </Panel>
-
-        <!-- 存储 -->
-        <Panel id="sec-storage" title="本地存储" code="POSTGRES + TIMESCALE" :icon="Database">
-          <div class="fgrid">
-            <div class="field span-2"><label for="dsn">数据库连接</label><input id="dsn" v-model="d.storage.dsn" class="input mono" /></div>
-            <div class="field"><label for="os">对象存储（报告、图表）</label><input id="os" v-model="d.storage.object_store" class="input mono" /></div>
-            <div class="field"><label for="sd">过程曲线保留</label><div class="unit-in"><input id="sd" v-model.number="d.storage.samples_days" class="input num" type="number" /><span>天</span></div><span class="hint">samples 时序表，超期自动压缩后删除</span></div>
-            <div class="field"><label for="rd">测试记录保留</label><div class="unit-in"><input id="rd" v-model.number="d.storage.runs_days" class="input num" type="number" /><span>天</span></div></div>
-            <div class="field"><label>5 分钟连续聚合</label><label class="opt"><input v-model="d.storage.agg_5m" type="checkbox" /><span>启用 agg_5m（运行总览依赖此表）</span></label></div>
           </div>
         </Panel>
 

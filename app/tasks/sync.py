@@ -1,15 +1,20 @@
+import asyncio
+import json
 import logging
 from uuid import uuid4
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
 from app.core.config import settings
+from app.core.errors import AppError
+from app.core.redis import redis_client
 from app.models.orm.alarm import AlarmOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.run import Agg5mOrm, RunOrm
+from app.service.compensation.cluster import cluster_json
+from app.service.settings.cluster_policy import async_send, request_timeout
 from app.service.overview.attribution import build_attribution
 from app.service.overview.hub import hub
 from app.service.overview.machine_service import MachineService
@@ -20,71 +25,120 @@ log = logging.getLogger(__name__)
 
 
 async def sync_cluster(session: AsyncSession) -> None:
-    """定时任务：按设置里的地址拉取机群和槽位，失败时保留库里的上一份快照。"""
+    """定时任务：按机群状态的间隔拉取 /fleet。槽位和机台详情各自另有任务。"""
     base = settings.cluster_base_url.rstrip("/")
     if not base:
         await _touch(session)
         return
     headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
-    # 集群慢时避免一轮同步拖太久，占死调度导致前端实时数据不刷新。
-    fleet_timeout = min(float(settings.cluster_timeout_s), 8.0)
-    slot_timeout = min(float(settings.cluster_timeout_s), 4.0)
-    deadline = now_ms() + 12_000
     try:
-        async with httpx.AsyncClient(timeout=fleet_timeout, trust_env=False) as client:
-            fleet = await client.get(f"{base}/fleet", headers=headers)
-            fleet.raise_for_status()
-            payload = fleet.json()
-            machines = payload if isinstance(payload, list) else payload.get("machines") or payload.get("items") or []
-            changed = []
-            for item in machines:
-                if not isinstance(item, dict) or "machine_id" not in item:
-                    continue
-                row = await _upsert_machine(session, item)
-                changed.append(row.machine_id)
-                if row.comm_status == "DISCONNECTED":
-                    continue
-                if now_ms() >= deadline:
-                    log.warning("cluster sync budget exhausted after %s", row.machine_id)
-                    break
-                # fleet 摘要常不带 slot_count；补一次机台详情，避免本地仍是种子的 10 槽
-                if not item.get("slot_count"):
-                    try:
-                        detail = await client.get(
-                            f"{base}/machines/{row.machine_id}",
-                            headers=headers,
-                            timeout=slot_timeout,
-                        )
-                        detail.raise_for_status()
-                        payload = detail.json() if detail.content else {}
-                        if isinstance(payload, dict) and payload.get("slot_count") is not None:
-                            row.slot_count = int(payload["slot_count"])
-                            await _prune_slots(session, row.machine_id, row.slot_count)
-                    except Exception as exc:
-                        log.warning("machine detail sync skipped for %s: %s", row.machine_id, exc)
-                try:
-                    slots = await client.get(
-                        f"{base}/machines/{row.machine_id}/slots",
-                        headers=headers,
-                        timeout=slot_timeout,
-                    )
-                    slots.raise_for_status()
-                    body = slots.json()
-                except Exception as exc:
-                    log.warning("slot sync skipped for %s: %s", row.machine_id, exc)
-                    continue
-                slot_rows = body if isinstance(body, list) else body.get("slots") or body.get("items") or []
-                await _replace_slots(session, row.machine_id, slot_rows)
-                await hub.publish(
-                    "slots",
-                    {"machine_id": row.machine_id, "slots": [_slot_dict(slot) for slot in slot_rows if isinstance(slot, dict)]},
-                )
-            if changed:
-                summaries = await _summaries(session, changed)
-                await hub.publish("fleet", summaries)
-    except Exception as exc:
-        log.warning("cluster fleet sync failed: %s", exc)
+        fleet = await async_send("GET", f"{base}/fleet", timeout=request_timeout(), headers=headers)
+        fleet.raise_for_status()
+        payload = fleet.json()
+        machines = payload if isinstance(payload, list) else payload.get("machines") or payload.get("items") or []
+        changed = []
+        for item in machines:
+            if not isinstance(item, dict) or "machine_id" not in item:
+                continue
+            row = await _upsert_machine(session, item)
+            changed.append(row.machine_id)
+        if changed:
+            summaries = await _summaries(session, changed)
+            await hub.publish("fleet", summaries)
+    except Exception:
+        raise
+
+
+async def _fleet_rows(session: AsyncSession) -> list[MachineOrm]:
+    ids = fleet_machine_ids() or await refresh_fleet()
+    if not ids:
+        return []
+    return list((await session.execute(select(MachineOrm).where(MachineOrm.machine_id.in_(ids)))).scalars().all())
+
+
+async def sync_slots(session: AsyncSession) -> None:
+    """按槽位实时的间隔拉取每台在线机台的槽位。通信断开的机台跳过。"""
+    base = settings.cluster_base_url.rstrip("/")
+    if not base:
         return
+    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    timeout = request_timeout(slot=True)
+    machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
+
+    async def fetch(machine_id: str):
+        try:
+            response = await async_send("GET", f"{base}/machines/{machine_id}/slots", timeout=timeout, headers=headers)
+            response.raise_for_status()
+            body = response.json()
+        except Exception as exc:
+            log.warning("slot sync skipped for %s: %s", machine_id, exc)
+            return machine_id, None
+        rows = body if isinstance(body, list) else body.get("slots") or body.get("items") or []
+        return machine_id, rows
+
+    fetched = await asyncio.gather(*(fetch(row.machine_id) for row in machines))
+    for machine_id, slot_rows in fetched:
+        if slot_rows is None:
+            continue
+        await _replace_slots(session, machine_id, slot_rows)
+        await hub.publish(
+            "slots",
+            {"machine_id": machine_id, "slots": [_slot_dict(slot) for slot in slot_rows if isinstance(slot, dict)]},
+        )
+
+
+async def sync_machine_details(session: AsyncSession) -> None:
+    """按机台详情的间隔拉取配置、报警、室温和槽位数。"""
+    base = settings.cluster_base_url.rstrip("/")
+    if not base:
+        return
+    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    timeout = request_timeout()
+    machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
+    changed = []
+
+    async def fetch(machine_id: str):
+        try:
+            response = await async_send("GET", f"{base}/machines/{machine_id}", timeout=timeout, headers=headers)
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+        except Exception as exc:
+            log.warning("machine detail sync skipped for %s: %s", machine_id, exc)
+            return machine_id, None
+        return machine_id, payload if isinstance(payload, dict) else None
+
+    fetched = await asyncio.gather(*(fetch(row.machine_id) for row in machines))
+    for machine_id, payload in fetched:
+        if not payload:
+            continue
+        payload["machine_id"] = machine_id
+        await _upsert_machine(session, payload)
+        if payload.get("slot_count") is not None:
+            await _prune_slots(session, machine_id, int(payload["slot_count"]))
+        changed.append(machine_id)
+    if changed:
+        await hub.publish("fleet", await _summaries(session, changed))
+
+
+async def sync_calib(session: AsyncSession) -> None:
+    """按补偿与漂移的间隔拉取每台在线机台，供设备配置页直接读。"""
+    machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
+    if not machines:
+        return
+    redis = redis_client()
+    synced = 0
+    for row in machines:
+        try:
+            compensation = await cluster_json("GET", f"/machines/{row.machine_id}/compensation")
+            drifts = await cluster_json("GET", f"/machines/{row.machine_id}/drifts")
+        except AppError as exc:
+            log.warning("calib sync skipped for %s: %s", row.machine_id, exc.message)
+            continue
+        await redis.set(f"sync:comp:{row.machine_id}", json.dumps(compensation), ex=180)
+        await redis.set(f"sync:drift:{row.machine_id}", json.dumps(drifts), ex=180)
+        synced += 1
+    if synced == 0:
+        raise RuntimeError("补偿与漂移没有同步到")
 
 
 async def rollup_agg(session: AsyncSession) -> None:

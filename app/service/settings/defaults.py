@@ -1,4 +1,5 @@
 from app.core.config import settings
+from app.service.settings.cluster_policy import TIMEOUT_MAX, clamp_retries, clamp_timeout
 
 DEFAULT_JOBS = [
     {"key": "fleet", "name": "机群状态", "api": "GET /api/fleet", "interval_s": 2, "enabled": True, "note": "状态、通信、已装载方案、排队剩余"},
@@ -36,8 +37,8 @@ def default_payload() -> dict:
         "cluster": {
             "base_url": settings.cluster_base_url or "http://10.20.1.10:18000/api",
             "token": settings.cluster_token or "",
-            "timeout_s": settings.cluster_timeout_s,
-            "retries": 2,
+            "timeout_s": min(clamp_timeout(settings.cluster_timeout_s), TIMEOUT_MAX),
+            "retries": clamp_retries(2),
             "on_503": "skip",
         },
         "sim": {
