@@ -26,6 +26,7 @@ from app.models.dto.settings import (
 from app.models.entity.user import UserEntity
 from app.repo.audit_repo import AuditRepo
 from app.repo.settings_repo import SettingsRepo
+from app.service.settings.changes import describe_settings_changes
 from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
 from app.service.settings.model import apply_shared_model
@@ -49,16 +50,20 @@ class SettingsService:
         await self.settings.session.commit()
         return settings_out(settings_entity(row.payload or {}, row.updated_at))
 
-    async def save_settings(self, body: PlatformSettingsOut) -> PlatformSettingsOut:
+    async def save_settings(self, body: PlatformSettingsOut, user: UserEntity) -> PlatformSettingsOut:
         incoming = body.model_dump()
         self._validate(incoming)
         row = await self.settings.get_or_create()
+        before = json.loads(json.dumps(row.payload or {}))
         payload = merge_secrets(incoming, row.payload or {})
         stored_ai = (row.payload or {}).get("ai") or {}
         ai = dict(payload.get("ai") or {})
         ai["base_url"] = stored_ai.get("base_url") or ""
         ai["api_key"] = stored_ai.get("api_key") or ""
         payload["ai"] = apply_shared_model(ai)
+        changes = describe_settings_changes(before, payload)
+        if changes:
+            self.audit.record(user.user_id, "settings.save", "", {"changes": changes}, {"count": len(changes)})
         row = await self.settings.save(payload)
         await self.settings.session.commit()
         apply_job_intervals(row.payload or {})

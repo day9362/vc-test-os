@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_user
 from app.core.database import get_session
 from app.models.dto.settings import PlatformSettingsOut
+from app.models.entity.user import UserEntity
 from app.service.settings.settings_service import SettingsService
 
 router = APIRouter(tags=["settings"])
@@ -17,7 +18,7 @@ async def get_settings(_: object = Depends(current_user), session: AsyncSession 
 @router.put("/settings", response_model=PlatformSettingsOut)
 async def put_settings(
     body: PlatformSettingsOut,
-    _: object = Depends(current_user),
+    user: UserEntity = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> PlatformSettingsOut:
-    return await SettingsService(session).save_settings(body)
+    return await SettingsService(session).save_settings(body, user)
