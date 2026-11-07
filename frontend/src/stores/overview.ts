@@ -42,6 +42,7 @@ const emptyKpi: KpiRaw = {
 export const useOverviewStore = defineStore('overview', () => {
   const machines = ref<MachineView[]>([])
   const alarms = ref<Alarm[]>([])
+  const pinned = ref<Alarm[]>([])
   const agg = ref<Agg5m[]>([])
   const anomaly = ref<{ hours: number[]; series: Record<string, number[]> }>({ hours: [], series: {} })
   const rc = ref<{ median: number; items: { machine_id: string; bias: number }[] }>({ median: 0, items: [] })
@@ -100,6 +101,7 @@ export const useOverviewStore = defineStore('overview', () => {
     rc.value = bias
     pipeline.value = pipeBody
     alarms.value = alarmPage.items
+    mergePins()
     ready.value = true
     error.value = ''
   }
@@ -122,6 +124,24 @@ export const useOverviewStore = defineStore('overview', () => {
     const index = alarms.value.findIndex((item) => item.id === alarm.id)
     if (index < 0) alarms.value.unshift(alarm)
     else alarms.value[index] = alarm
+  }
+
+  function pin(alarm: Alarm) {
+    pinned.value = [alarm, ...pinned.value.filter((item) => item.id !== alarm.id)].slice(0, 5)
+    mergePins()
+  }
+
+  function mergePins() {
+    for (const alarm of pinned.value) {
+      const index = alarms.value.findIndex((item) => item.id === alarm.id)
+      if (index >= 0) {
+        alarms.value[index] = alarm
+        continue
+      }
+      const at = alarms.value.findIndex((item) => item.time < alarm.time)
+      if (at < 0) alarms.value.push(alarm)
+      else alarms.value.splice(at, 0, alarm)
+    }
   }
 
   function applyAgg(row: Agg5m) {
@@ -188,6 +208,6 @@ export const useOverviewStore = defineStore('overview', () => {
 
   return {
     machines, alarms, agg, anomaly, rc, pipe, kpi, paused, range, error, ready,
-    start, refresh, ack, unack, machine,
+    start, refresh, ack, unack, machine, pin,
   }
 })

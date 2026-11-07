@@ -19,6 +19,7 @@ from app.service.overview.attribution import build_attribution
 from app.service.overview.hub import hub
 from app.service.overview.machine_service import MachineService
 from app.service.overview.mapping import alarm_entity, alarm_out
+from app.service.overview.rules import escalate_alarm, load_alarm_rules, matched_we_rules, we_message
 from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
 
 log = logging.getLogger(__name__)
@@ -175,28 +176,34 @@ async def scan_alarms(session: AsyncSession) -> None:
         allowed = set(fleet)
         machines = [machine for machine in machines if machine.machine_id in allowed]
         slots = [slot for slot in slots if slot.machine_id in allowed]
-    open_keys = {(row.machine_id, row.code, row.slot_index) for row in (await session.execute(select(AlarmOrm).where(AlarmOrm.acked.is_(False)))).scalars()}
+    open_rows = list((await session.execute(select(AlarmOrm).where(AlarmOrm.acked.is_(False)))).scalars())
+    open_keys = {(row.machine_id, row.code, row.slot_index) for row in open_rows}
+    rules = await load_alarm_rules(session)
+    stamp = now_ms()
+    escalated = [row for row in open_rows if escalate_alarm(row, stamp, rules.ack_timeout_min)]
     created: list[AlarmOrm] = []
     for machine in machines:
         if machine.status == "FAULT" and machine.alarm:
             created += _open(session, open_keys, machine.machine_id, None, "critical", "机台", machine.alarm.split(" · ")[0], machine.alarm)
         if machine.comm_status == "DISCONNECTED":
             created += _open(session, open_keys, machine.machine_id, None, "critical", "通信", "DISCONNECTED", f"{machine.machine_id} 通信断开")
-        elif machine.comm_status == "DEGRADED" and settings.degraded_alarm:
+        elif machine.comm_status == "DEGRADED" and rules.degraded_alarm:
             created += _open(session, open_keys, machine.machine_id, None, "major", "通信", "DEGRADED", f"{machine.machine_id} 通信降级：{machine.comm_note or '降级'}")
     for slot in slots:
         if slot.phase == "ERROR":
             created += _open(session, open_keys, slot.machine_id, slot.index, "major", "槽位", "SLOT_ERROR", slot.last_error or "槽位错误")
-        if settings.sentinel_as_data_anomaly:
+        if rules.sentinel_as_data_anomaly:
             for channel, value in (("T0", slot.t0), ("T1", slot.t1), ("Ta", slot.ta)):
                 code = _sentinel_code(value)
                 if code:
                     created += _open(session, open_keys, slot.machine_id, slot.index, "minor", "数据", code, f"{channel} 读数 {_plain(value)}（哨兵值）")
-    created += await _drift_alarms(session, open_keys)
+    created += await _drift_alarms(session, open_keys, rules.drift_c)
+    created += await _trend_alarms(session, open_keys, rules.we_rules)
     created += await _consecutive_alarms(session, open_keys)
     created += _ambient_alarms(session, machines, open_keys)
     for alarm in created:
         await build_attribution(session, alarm, "系统", automatic=True)
+    for alarm in [*escalated, *created]:
         await hub.publish("alarms", alarm_out(alarm_entity(alarm)).model_dump())
 
 
@@ -230,15 +237,8 @@ def _ambient_alarms(session, machines, keys) -> list[AlarmOrm]:
     return created
 
 
-async def _drift_alarms(session: AsyncSession, keys) -> list[AlarmOrm]:
-    rows = (await session.execute(
-        select(RunOrm.machine_id, RunOrm.dt01).where(RunOrm.dt01.is_not(None)).order_by(RunOrm.ended_at.desc()).limit(4000)
-    )).all()
-    grouped: dict[str, list[float]] = {}
-    for machine_id, dt01 in rows:
-        bucket = grouped.setdefault(machine_id, [])
-        if len(bucket) < 30:
-            bucket.append(float(dt01))
+async def _drift_alarms(session: AsyncSession, keys, drift_c: float) -> list[AlarmOrm]:
+    grouped = await _dt01_groups(session)
     created: list[AlarmOrm] = []
     for machine_id, samples in grouped.items():
         if len(samples) < 5:
@@ -247,13 +247,36 @@ async def _drift_alarms(session: AsyncSession, keys) -> list[AlarmOrm]:
         mid = len(baseline) // 2
         median = baseline[mid] if len(baseline) % 2 else (baseline[mid - 1] + baseline[mid]) / 2
         estimate = samples[0] - median
-        if abs(estimate) <= settings.drift_c:
+        if abs(estimate) <= drift_c:
             continue
         created += _open(
             session, keys, machine_id, None, "major", "漂移", "EQUIPMENT_ANOMALY",
             f"T0-T1 通道漂移 {estimate:+.3f} ℃",
         )
     return created
+
+
+async def _trend_alarms(session: AsyncSession, keys, enabled: tuple[str, ...]) -> list[AlarmOrm]:
+    if not enabled:
+        return []
+    grouped = await _dt01_groups(session)
+    created: list[AlarmOrm] = []
+    for machine_id, samples in grouped.items():
+        for rule in matched_we_rules(samples, enabled):
+            created += _open(session, keys, machine_id, None, "major", "趋势", rule, we_message(rule, samples[0]))
+    return created
+
+
+async def _dt01_groups(session: AsyncSession) -> dict[str, list[float]]:
+    rows = (await session.execute(
+        select(RunOrm.machine_id, RunOrm.dt01).where(RunOrm.dt01.is_not(None)).order_by(RunOrm.ended_at.desc()).limit(4000)
+    )).all()
+    grouped: dict[str, list[float]] = {}
+    for machine_id, dt01 in rows:
+        bucket = grouped.setdefault(machine_id, [])
+        if len(bucket) < 30:
+            bucket.append(float(dt01))
+    return grouped
 
 
 async def _consecutive_alarms(session: AsyncSession, keys) -> list[AlarmOrm]:

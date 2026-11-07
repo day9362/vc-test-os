@@ -62,7 +62,7 @@ function normalize(body: PlatformSettings): PlatformSettings {
   next.jobs = body.jobs?.length ? body.jobs : next.jobs
   next.storage = { ...next.storage, ...body.storage }
   next.ai = { ...next.ai, ...body.ai, model: body.ai?.model || next.ai.model, models: { ...next.ai.models, ...(body.ai?.models || {}) } }
-  next.rules = { ...next.rules, ...body.rules, we_rules: body.rules?.we_rules?.length ? [...body.rules.we_rules] : next.rules.we_rules }
+  next.rules = { ...next.rules, ...body.rules, we_rules: Array.isArray(body.rules?.we_rules) ? [...body.rules.we_rules] : next.rules.we_rules }
   return next
 }
 

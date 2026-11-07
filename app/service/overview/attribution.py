@@ -4,7 +4,7 @@ from app.core.clock import now_ms
 from app.models.orm.alarm import AlarmOrm, AttributionOrm
 from app.repo.alarm_repo import AlarmRepo
 
-CATEGORY = {"机台": "equipment", "槽位": "equipment", "漂移": "equipment", "判定": "product", "通信": "communication", "数据": "data"}
+CATEGORY = {"机台": "equipment", "槽位": "equipment", "漂移": "equipment", "趋势": "equipment", "判定": "product", "通信": "communication", "数据": "data"}
 
 
 async def build_attribution(session: AsyncSession, alarm: AlarmOrm, actor: str, *, automatic: bool = False) -> AttributionOrm:

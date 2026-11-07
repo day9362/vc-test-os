@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   Activity, ArrowRight, BellRing, ClipboardCheck, Cpu, Download, Gauge, Microscope, Pause, Play, Server, Sigma, Table2, TrendingUp, TriangleAlert,
@@ -11,6 +11,8 @@ import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import MachineDrawer from '@/components/MachineDrawer.vue'
+import { api } from '@/api/http'
+import type { Alarm } from '@/api/types'
 import { useOverviewStore, type MachineView } from '@/stores/overview'
 import { useAppStore } from '@/stores/app'
 import { useTokens } from '@/composables/useTokens'
@@ -98,7 +100,31 @@ const recent5 = computed(() => [...ov.agg].slice(-8).reverse())
 const levelKind = { critical: 'danger', major: 'warn', minor: 'info' } as const
 const levelText = { critical: '严重', major: '主要', minor: '次要' }
 const alarmFilter = ref<'open' | 'all'>('open')
-const alarmList = computed(() => ov.alarms.filter((a) => alarmFilter.value === 'all' || !a.acked).slice(0, 12))
+const focusId = computed(() => String(route.query.alarm || ''))
+const alarmList = computed(() => {
+  const rows = ov.alarms.filter((a) => alarmFilter.value === 'all' || !a.acked)
+  if (!focusId.value) return rows.slice(0, 12)
+  const index = rows.findIndex((a) => a.id === focusId.value)
+  return rows.slice(0, Math.max(12, index + 1))
+})
+
+watch([focusId, () => ov.ready], ([id, ready]) => {
+  if (id && ready) locateAlarm(id)
+}, { immediate: true })
+
+async function locateAlarm(id: string) {
+  alarmFilter.value = 'all'
+  if (!ov.alarms.some((item) => item.id === id)) {
+    try {
+      ov.pin(await api<Alarm>(`/alarms/${encodeURIComponent(id)}`))
+    } catch (exc) {
+      app.toast({ kind: 'danger', title: '没有找到这条告警', desc: exc instanceof Error ? exc.message : '没有找到这条告警' })
+      return
+    }
+  }
+  await nextTick()
+  document.querySelector(`[data-alarm="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center' })
+}
 const pipeStats = computed(() => ov.pipe)
 
 function csvCell(value: string | number) {
@@ -213,7 +239,7 @@ function exportCsv() {
           </div>
         </template>
         <ul class="alarms">
-          <li v-for="a in alarmList" :key="a.id" :class="[levelKind[a.level], { acked: a.acked }]">
+          <li v-for="a in alarmList" :key="a.id" :data-alarm="a.id" :class="[levelKind[a.level], { acked: a.acked, on: a.id === focusId }]">
             <span class="tag" :class="levelKind[a.level]">{{ levelText[a.level] }}</span>
             <div class="grow" style="min-width: 0">
               <div class="row-between">
@@ -305,5 +331,6 @@ function exportCsv() {
 .alarms li.danger { box-shadow: inset 3px 0 0 var(--c-danger); }
 .alarms li.warn { box-shadow: inset 3px 0 0 var(--c-warn); }
 .alarms li.acked { opacity: 0.55; }
+.alarms li.on { background: var(--c-primary-weak); opacity: 1; }
 .alarms .none { justify-content: center; color: var(--c-text-3); padding: 32px; box-shadow: none; }
 </style>

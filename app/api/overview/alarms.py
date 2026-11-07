@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_user
 from app.core.database import get_session
 from app.core.redis import get_redis
-from app.models.dto.alarm import AlarmPageOut
+from app.models.dto.alarm import AlarmOut, AlarmPageOut
 from app.models.entity.user import UserEntity
 from app.service.overview.alarm_service import AlarmService
 
@@ -23,3 +23,13 @@ async def list_alarms(
     session: AsyncSession = Depends(get_session),
 ) -> AlarmPageOut:
     return await AlarmService(session).list_alarms(acked, machine_id, level, cursor, limit)
+
+
+@router.get("/alarms/{alarm_id}", response_model=AlarmOut)
+async def get_alarm(
+    alarm_id: str,
+    _: UserEntity = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> AlarmOut:
+    return await AlarmService(session).get_alarm(alarm_id)
+
