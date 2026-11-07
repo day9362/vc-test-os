@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ArrowUp, BarChart3, Bot, Check, ChevronRight, Database, Download, Eye, FileCode2, Loader2, Plus, ShieldCheck, Sparkles, SquareTerminal, User, Wrench, X,
+  ArrowUp, BarChart3, Bot, Check, ChevronRight, Database, Download, Eye, FileCode2, Loader2, Plus, ShieldCheck, Sparkles, User, Wrench, X,
 } from 'lucide-vue-next'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
@@ -88,6 +88,12 @@ function readModule(): AgentModule {
 }
 
 const activeModule = ref<AgentModule>(readModule())
+const promptsOpen = ref(false)
+
+function pickPrompt(text: string, module: AgentModule) {
+  promptsOpen.value = false
+  void send(text, module)
+}
 interface SessionItem { session_id: string; module: AgentModule; title: string; updated_at: number }
 const history = ref<SessionItem[]>([])
 const currentId = ref<string | null>(sessionStorage.getItem(SESSION_KEY))
@@ -211,11 +217,119 @@ async function send(q = input.value, module?: AgentModule) {
   }
 }
 
-function toolLabel(name: string) {
-  return name.split('__').pop() || name
+function toolArgs(raw: string): Record<string, unknown> {
+  if (!raw.trim()) return {}
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function listed(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean).join('、')
+  if (value === undefined || value === null || value === '') return ''
+  return String(value)
+}
+
+function toolStory(block: Extract<Block, { type: 'tool' }>) {
+  const args = toolArgs(block.args)
+  const machines = listed(args.machine_ids) || listed(args.machine_id)
+  const slot = args.slot_index === undefined || args.slot_index === null || args.slot_index === '' ? '' : `${args.slot_index} 号槽`
+  const place = [machines, slot].filter(Boolean).join(' ')
+  const serial = listed(args.serial_number)
+  const plan = listed(args.plan_id)
+  const version = args.version ?? args.plan_version
+  const planText = [plan, version ? `v${version}` : ''].filter(Boolean).join(' ')
+  const count = listed(args.count)
+  const model = listed(args.model)
+  const stories: Record<string, string> = {
+    overview: '查看整线现在的情况',
+    machines: '查看机台列表',
+    machine: place ? `查看 ${place} 现在的状态` : '查看一台机现在的状态',
+    slot: place ? `查看 ${place} 测到哪了` : '查看一个槽测到哪了',
+    production: '查看当前连续生产',
+    search: args.q ? `按「${args.q}」查找` : '按关键字查找',
+    sim_catalog: '查看可以切换的仿真场景和故障',
+    calibration: machines ? `查看 ${machines} 的通道补偿` : '查看通道补偿',
+    calibration_history: machines ? `查看 ${machines} 的补偿修改记录` : '查看补偿修改记录',
+    plan_history: machines ? `查看 ${machines} 用过的方案` : '查看机台用过的方案',
+    audit: '查看操作记录',
+    power_on: machines ? `给 ${machines} 上电` : '给机台上电',
+    power_off: machines ? `给 ${machines} 关机` : '给机台关机',
+    reset: machines ? `复位 ${machines}` : '复位全部在线机台',
+    maintenance: machines ? (args.on === false ? `让 ${machines} 退出维修` : `让 ${machines} 进入维修`) : '切换维修模式',
+    slot_load: `把 ${serial || '板'} 装到 ${place || '槽上'}，先不开测`,
+    slot_start: place ? `对 ${place} 开测` : '对已装板的槽开测',
+    slot_test: `把 ${serial || '板'} 装到 ${place || '槽上'}并开测`,
+    slot_abort: place ? `中止 ${place}` : '中止槽位测试',
+    slot_clear_error: place ? `清除 ${place} 的错误` : '清除槽位错误',
+    dispatch: `把方案${planText ? ` ${planText}` : ''}装到 ${machines || '机台'}，先不开测`,
+    production_precheck: '检查连续生产能不能开始',
+    production_start: machines ? `在 ${machines} 上开始连续生产` : '开始连续生产',
+    production_stop: args.batch_id ? `停止批次 ${args.batch_id} 的连续生产` : '停止当前连续生产',
+    sim_speed: machines ? `把 ${machines} 的仿真倍率改为 ${listed(args.speed) || '新倍率'}` : '修改仿真倍率',
+    sim_scenario: `给 ${machines || '机台'} 切换仿真场景${args.name ? `「${args.name}」` : ''}`,
+    sim_fault: `给 ${machines || '机台'} 注入故障${args.kind ? ` ${args.kind}` : ''}`,
+    suggest_compensation: machines ? `为 ${machines} 提交补偿建议` : '提交补偿建议',
+    apply_compensation: machines ? `把补偿写入 ${machines}` : '写入通道补偿',
+    plans: '查看已有方案',
+    plan: plan ? `查看方案 ${planText}` : '查看方案内容',
+    from_text: '把这段测试要求整理成方案草稿',
+    validate: '校验方案参数',
+    save_draft: plan ? `保存方案草稿 ${plan}` : '保存方案草稿',
+    delete_draft: plan ? `删除草稿 ${plan}` : '删除方案草稿',
+    publish: plan ? `发布方案 ${planText}` : '发布方案',
+    boards: '查看待测板',
+    board: serial ? `查看板 ${serial}` : '查看一片板',
+    batches: model ? `查看 ${model} 的批次` : '查看批次',
+    batch: args.batch_id ? `查看批次 ${args.batch_id}` : '查看一个批次',
+    models: '查看型号',
+    defect_kinds: '查看缺陷种类',
+    create_batch: count || model ? `生成${count ? ` ${count} 片` : ''}${model ? ` ${model}` : ''}待测板` : '生成一批待测板',
+    requeue: serial ? `把标准样品 ${serial} 放回待测` : '把标准样品放回待测',
+    runs: '查看测试记录',
+    run: args.run_id ? `查看记录 ${args.run_id}` : '查看一条测试记录',
+    ground_truth: '核对这条记录的仿真真值',
+    compare: '对比这几个批次的良率',
+    trend: '查看产量和良率趋势',
+    export: '导出生产结果表',
+    alarms: '查看告警',
+    attribution: '查看这条告警的原因',
+    ack: '确认告警',
+    unack: '取消确认告警',
+    ack_all: '确认全部未处理告警',
+    rerun_attribution: '重新分析这条告警的原因',
+    report_summary: '生成批次报告结论',
+    report_figure: '按描述生成图表',
+    report_export: '导出 PDF 报告',
+  }
+  const action = String(args.action || '')
+  return stories[action] || '正在查询'
+}
+
+function toolBlocks(message: Msg) {
+  return message.blocks.flatMap((block, index) => (block.type === 'tool' ? [{ block, index }] : []))
+}
+
+function stepTitle(message: Msg) {
+  const rows = toolBlocks(message)
+  const done = rows.filter((item) => item.block.result).length
+  if (message.live && done < rows.length) return done ? `正在进行，已完成 ${done} 个步骤` : '正在进行'
+  return `已完成 ${rows.length} 个步骤`
 }
 
 const openTools = ref<Record<string, boolean>>({})
+const closedSteps = ref<Record<number, boolean>>({})
+
+function stepsShown(messageId: number) {
+  return !closedSteps.value[messageId]
+}
+
+function toggleSteps(messageId: number) {
+  closedSteps.value = { ...closedSteps.value, [messageId]: !closedSteps.value[messageId] }
+}
 
 function toolKey(messageId: number, index: number) {
   return `${messageId}:${index}`
@@ -537,17 +651,12 @@ onMounted(() => {
     <!-- 左：能力 -->
     <aside class="left">
       <button class="btn btn-primary" style="width: 100%" @click="newSession"><Plus :size="16" />新对话</button>
-      <div v-if="history.length" class="history">
+      <div class="history">
+        <p v-if="!history.length" class="fs-xs muted">还没有对话</p>
         <div v-for="item in history" :key="item.session_id" class="pr hist" :class="{ on: item.session_id === currentId }">
           <button type="button" class="hist-open" :disabled="busy" @click="openSession(item.session_id)">{{ item.title || '新对话' }}</button>
           <button type="button" class="hist-x" :disabled="busy" title="删除" @click="removeSession(item.session_id)"><X :size="12" /></button>
         </div>
-      </div>
-      <div v-for="c in CAPS" :key="c.key" class="cap" :class="{ active: activeModule === c.module }">
-        <h4 @click="showSession(c.module as AgentModule)"><component :is="c.icon" :size="14" />{{ c.title }}<span class="code-label">{{ c.module }}</span></h4>
-        <button v-for="p in c.prompts" :key="p" class="pr" :disabled="busy" @click="send(p, c.module as AgentModule)">
-          <span>{{ p }}</span><ChevronRight :size="14" />
-        </button>
       </div>
       <div class="safe">
         <ShieldCheck :size="16" />
@@ -557,6 +666,23 @@ onMounted(() => {
 
     <!-- 中：对话 -->
     <section class="center">
+      <div class="prompts">
+        <button type="button" class="prompts-h" @click="promptsOpen = !promptsOpen">
+          <ChevronRight :size="14" :class="{ 'turn-down': promptsOpen }" />
+          <span>{{ promptsOpen ? '收起提示' : '展开提示' }}</span>
+          <span v-if="!promptsOpen" class="prompts-hint">跨批次分析、测试方案、设备操作</span>
+        </button>
+        <div v-if="promptsOpen" class="prompts-body">
+          <div v-for="c in CAPS" :key="c.key" class="cap" :class="{ active: activeModule === c.module }">
+            <h4 @click="showSession(c.module as AgentModule)"><component :is="c.icon" :size="14" />{{ c.title }}</h4>
+            <div class="chips">
+              <button v-for="p in c.prompts" :key="p" class="pr" :disabled="busy" @click="pickPrompt(p, c.module as AgentModule)">
+                <span>{{ p }}</span><ChevronRight :size="14" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
       <div class="session-bar">
         <span class="tag primary">{{ MODULE_TEXT[activeModule] }}</span>
         <span class="mono fs-xs muted">{{ history.find((item) => item.session_id === currentId)?.title || '新对话' }}</span>
@@ -571,18 +697,21 @@ onMounted(() => {
               <span class="num">{{ hms(m.time) }}</span>
               <span v-if="m.tokens" class="num grow" style="text-align: right">{{ m.tokens[0].toLocaleString() }} 入 / {{ m.tokens[1].toLocaleString() }} 出</span>
             </div>
-            <template v-for="(b, i) in m.blocks" :key="i">
-              <div v-if="b.type === 'tool'" class="tool">
-                <Database v-if="b.name.startsWith('sql')" :size="13" /><SquareTerminal v-else :size="13" />
-                <span class="mono" :title="b.name">{{ toolLabel(b.name) }}</span>
-                <span v-if="!b.result && m.live" class="mono muted">执行中</span>
-                <span class="grow" />
-                <button v-if="b.args || b.result" class="btn btn-ghost btn-sm" type="button" @click="toggleTool(m.id, i)">
-                  <ChevronRight :size="14" :class="{ 'turn-down': openTools[toolKey(m.id, i)] }" />{{ openTools[toolKey(m.id, i)] ? '收起' : '查看返回' }}
-                </button>
-                <pre v-if="openTools[toolKey(m.id, i)]" class="tool-json">{{ [prettyJson(b.args), prettyJson(b.result)].filter(Boolean).join('\n\n') }}</pre>
-              </div>
-            </template>
+            <div v-if="toolBlocks(m).length" class="steps">
+              <button type="button" class="steps-h" @click="toggleSteps(m.id)">
+                <ChevronRight :size="14" :class="{ 'turn-down': stepsShown(m.id) }" />{{ stepTitle(m) }}
+              </button>
+              <ul v-if="stepsShown(m.id)">
+                <li v-for="item in toolBlocks(m)" :key="item.index">
+                  <span>{{ toolStory(item.block) }}</span>
+                  <span v-if="!item.block.result && m.live" class="muted">进行中</span>
+                  <button v-if="item.block.args || item.block.result" class="btn btn-ghost btn-sm" type="button" @click="toggleTool(m.id, item.index)">
+                    {{ openTools[toolKey(m.id, item.index)] ? '收起' : '查看返回' }}
+                  </button>
+                  <pre v-if="openTools[toolKey(m.id, item.index)]" class="tool-json">{{ [prettyJson(item.block.args), prettyJson(item.block.result)].filter(Boolean).join('\n\n') }}</pre>
+                </li>
+              </ul>
+            </div>
             <template v-for="(b, i) in m.blocks" :key="'d' + i">
               <div v-if="b.type === 'table'" class="card">
                 <div class="ch"><Database :size="14" />{{ b.title }}<span class="grow" /><span v-if="b.more" class="mono muted">还有 {{ b.more }} 行</span></div>
@@ -702,7 +831,7 @@ onMounted(() => {
           <template v-for="message in msgs" :key="message.id">
             <li v-for="block in reviewBlocks(message)" :key="block.id">
               <button type="button" class="pend-jump" :class="{ expired: isExpired(block) }" @click="locateAction(block.id)">
-                <span class="mono fs-xs"><b>{{ toolLabel(block.name) }}</b> <span v-if="isExpired(block)" class="tag">失效</span><span v-else class="tag warn">待确认</span></span>
+                <span class="fs-xs"><span v-if="isExpired(block)" class="tag">失效</span><span v-else class="tag warn">待确认</span></span>
                 <span class="fs-sm pend-desc">{{ block.desc }}</span>
               </button>
             </li>
@@ -724,18 +853,25 @@ onMounted(() => {
 <style scoped>
 .agent-page { display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; height: 100%; min-height: 0; }
 @media (max-width: 1360px) { .agent-page { grid-template-columns: 230px minmax(0, 1fr) 260px; } }
-.left, .right { padding: 14px; display: flex; flex-direction: column; gap: 12px; overflow: auto; background: var(--c-surface); }
-.left { border-right: var(--bw) solid var(--c-border); }
-.right { border-left: var(--bw) solid var(--c-border); background: var(--c-bg); }
+.left, .right { padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 0; background: var(--c-surface); }
+.left { border-right: var(--bw) solid var(--c-border); overflow: hidden; }
+.right { border-left: var(--bw) solid var(--c-border); background: var(--c-bg); overflow: auto; }
+.prompts { display: flex; flex-direction: column; border-bottom: var(--bw) solid var(--c-border); background: var(--c-surface); }
+.prompts-h { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 16px; border: 0; background: transparent; color: var(--c-text-2); font-size: var(--fs-sm); cursor: pointer; text-align: left; }
+.prompts-h:hover { color: var(--c-text); }
+.prompts-hint { color: var(--c-text-3); font-size: var(--fs-xs); font-weight: 400; }
+.prompts-body { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 10px; background: var(--c-bg); }
+.prompts .cap { min-width: 0; }
+.prompts .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.prompts .pr { width: auto; max-width: 100%; margin: 0; }
 .cap h4 { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); margin-bottom: 6px; cursor: pointer; }
 .cap.active h4 { color: var(--c-primary); }
 .session-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: var(--bw) solid var(--c-border); background: var(--c-surface); }
-.cap h4 .code-label { margin-left: auto; font-size: 9px; }
 .pr { width: 100%; display: flex; align-items: center; gap: 4px; text-align: left; padding: 6px 8px; margin-bottom: 4px; border: var(--bw) solid var(--c-border); background: var(--c-surface-2); color: var(--c-text-2); font-size: var(--fs-xs); cursor: pointer; line-height: 1.4; }
 .pr span { flex: 1; }
 .pr:hover:not(:disabled) { border-color: var(--c-primary); color: var(--c-text); }
 .pr.on { border-color: var(--c-primary); color: var(--c-text); background: var(--c-primary-weak); }
-.history { display: flex; flex-direction: column; max-height: 160px; overflow: auto; }
+.history { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }
 .hist { padding: 0; }
 .hist-open { flex: 1; min-width: 0; text-align: left; padding: 6px 8px; background: transparent; border: 0; color: inherit; font: inherit; cursor: pointer; }
 .hist-x { flex: none; width: 22px; border: 0; background: transparent; color: var(--c-text-3); cursor: pointer; }
@@ -757,10 +893,13 @@ onMounted(() => {
 .msg.user .meta { flex-direction: row-reverse; }
 .txt { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; padding: 10px 12px; background: var(--c-surface); border: var(--bw) solid var(--c-border); max-width: 100%; }
 .msg.user .txt { background: var(--c-primary-weak); border-color: color-mix(in srgb, var(--c-primary) 30%, transparent); }
-.tool { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; padding: 4px 10px; font-size: var(--fs-xs); background: var(--c-surface-2); border-left: 2px solid var(--c-text-3); min-width: 0; max-width: 100%; overflow: hidden; }
-.tool svg { flex: none; color: var(--c-text-3); margin-top: 2px; }
-.tool > .mono:first-of-type { white-space: nowrap; }
-.tool .btn { margin-left: auto; }
+.steps { background: var(--c-surface-2); border-left: 2px solid var(--c-border); max-width: 100%; min-width: 0; }
+.steps-h { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 10px; border: 0; background: transparent; color: var(--c-text-2); font-size: var(--fs-xs); cursor: pointer; text-align: left; }
+.steps ul { list-style: none; margin: 0; padding: 0 10px 8px 28px; display: flex; flex-direction: column; gap: 6px; }
+.steps li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--fs-xs); color: var(--c-text); line-height: 1.5; }
+.steps li > span:first-child { position: relative; }
+.steps li > span:first-child::before { content: ''; position: absolute; left: -14px; top: 0.55em; width: 5px; height: 5px; border-radius: 50%; background: var(--c-text-3); }
+.steps .btn { margin-left: auto; }
 .tool-json { flex: 1 1 100%; margin: 0; max-height: 240px; overflow: auto; padding: 8px 10px; background: var(--c-surface); border: var(--bw) solid var(--c-border); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .turn-down { transform: rotate(90deg); }
 .card { border: var(--bw) solid var(--c-border); background: var(--c-surface); max-width: 100%; min-width: 0; }
