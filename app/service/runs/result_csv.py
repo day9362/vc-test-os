@@ -34,6 +34,10 @@ _FORCE = re.compile(r"^f(\d+)$")
 _AMBIENT = {"ta", "ambient"}
 
 
+def export_date() -> str:
+    return datetime.now(TZ).strftime("%Y-%m-%d")
+
+
 def build_result_export(rows: list, models: dict[str, str], durations: dict[tuple[str, int], int], group: str) -> tuple[bytes, str, str]:
     if group not in {"day", "batch", "products"}:
         raise ValueError(group)
@@ -41,7 +45,7 @@ def build_result_export(rows: list, models: dict[str, str], durations: dict[tupl
     if group == "products":
         for item in built:
             item.pop("_day", None)
-        return _render(built).encode("utf-8-sig"), "text/csv; charset=utf-8", "products.csv"
+        return _render(built).encode("utf-8-sig"), "text/csv; charset=utf-8", f"products_{export_date()}.csv"
     if group == "batch":
         name = _safe(str(getattr(rows[0], "batch_id", "") or "results")) + ".csv" if rows else "results.csv"
         text = _render(built)
@@ -65,12 +69,7 @@ def render_raw(points: list[dict[str, Any]]) -> str:
     columns = ["t_s", *[name for name in _measure_order([set(point) for point in points]) if name != "t_s"]]
     if "t_s" not in columns:
         columns.insert(0, "t_s")
-    handle = io.StringIO()
-    writer = csv.writer(handle)
-    writer.writerow(columns)
-    for point in points:
-        writer.writerow(["" if point.get(column) is None else point.get(column) for column in columns])
-    return handle.getvalue()
+    return _write(columns, points)
 
 
 def points_from_body(body: object) -> list[dict[str, Any]]:
@@ -99,7 +98,7 @@ def points_from_body(body: object) -> list[dict[str, Any]]:
 def raw_filename(batch_id: str, serial: str, ended_at: int, run_id: str) -> str:
     stamp = _clock(ended_at).strftime("%Y%m%d-%H%M%S") if ended_at else "unknown"
     product = serial or run_id or "product"
-    return f"{_safe(batch_id or 'batch')}_{_safe(product)}_{stamp}.csv"
+    return f"{_safe(batch_id or 'batch')}_{_safe(product)}_{stamp}_{export_date()}.csv"
 
 
 def unique_names(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -208,12 +207,43 @@ def header_for(name: str) -> str | None:
 def _render(rows: list[dict[str, Any]]) -> str:
     present = [set(row) for row in rows]
     columns = [*IDENTITY, *_measure_order(present)]
+    return _write(columns, rows)
+
+
+def _write(columns: list[str], rows: list[dict[str, Any]]) -> str:
     handle = io.StringIO()
     writer = csv.writer(handle)
-    writer.writerow(columns)
+    writer.writerow([_label(column) for column in columns])
     for row in rows:
-        writer.writerow(["" if row.get(column) is None else row.get(column, "") for column in columns])
+        writer.writerow([_cell(column, row.get(column)) for column in columns])
     return handle.getvalue()
+
+
+def _label(column: str) -> str:
+    unit = _unit(column)
+    return f"{column} ({unit})" if unit else column
+
+
+def _unit(column: str) -> str | None:
+    if column in {"t_s", "elapsed_s", "planned_duration_s"}:
+        return "s"
+    if column.startswith("temp_") or column.startswith("delta_"):
+        return "℃"
+    if column.startswith("force_"):
+        return "g"
+    if column == "power_w":
+        return "W"
+    if column == "thermal_resistance":
+        return "℃/W"
+    return None
+
+
+def _cell(column: str, value: object) -> object:
+    if value is None:
+        return ""
+    if _unit(column) and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{float(value):.2f}"
+    return value
 
 
 def _measure_order(present: list[set[str]]) -> list[str]:

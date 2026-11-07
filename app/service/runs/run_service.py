@@ -18,7 +18,7 @@ from app.repo.run_repo import RunRepo
 from app.repo.settings_repo import SettingsRepo
 from app.service.runs.cluster_ingest import _get, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
-from app.service.runs.result_csv import build_result_export, points_from_body, raw_filename, render_raw, unique_names
+from app.service.runs.result_csv import build_result_export, export_date, points_from_body, raw_filename, render_raw, unique_names
 
 log = logging.getLogger(__name__)
 _last_ingest = 0.0
@@ -221,7 +221,7 @@ class RunService:
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for name, text in files:
                 archive.writestr(name, text.encode("utf-8-sig"))
-        return buffer.getvalue(), "application/zip", "rawdata.zip"
+        return buffer.getvalue(), "application/zip", f"rawdata_{export_date()}.zip"
 
     async def _raw_points(self, run_id: str) -> list[dict]:
         if settings.cluster_base_url:
