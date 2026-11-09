@@ -278,6 +278,23 @@ def _empty(batches: list[BatchStatOut]) -> ReportDataOut:
     )
 
 
+def _share_text(count: int, total: int) -> str:
+    rate = 100 * count / total
+    text = f"{rate:.1f}".rstrip("0").rstrip(".")
+    return f"{text}%"
+
+
+def _main_fail_text(fails: dict[str, int], tested: int) -> tuple[str, int]:
+    if not fails or not tested:
+        return "", 0
+    ranked = sorted(fails.items(), key=lambda pair: (-pair[1], pair[0]))
+    shown = [(name, count) for name, count in ranked if count * 100 > tested * 40]
+    if not shown:
+        shown = ranked[:1]
+    text = "、".join(f"{name} {_share_text(count, tested)}" for name, count in shown)
+    return text, ranked[0][1]
+
+
 def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
     tested = len(rows)
     passed = sum(1 for row in rows if row.passed is True)
@@ -288,7 +305,7 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
     for row in rows:
         for item in row.fail_items or []:
             fails[str(item)] += 1
-    top_fail = max(fails, key=fails.get) if fails else ""
+    top_fail, top_count = _main_fail_text(fails, tested)
     by_machine: dict[str, list[RunOrm]] = defaultdict(list)
     for row in rows:
         by_machine[row.machine_id].append(row)
@@ -326,7 +343,7 @@ def _batch_stat(batch_id: str, rows: list[RunOrm]) -> BatchStatOut:
         rc_mean=round(_mean(rcs), 3),
         rc_sd=round(_sd(rcs), 3),
         top_fail=top_fail,
-        top_fail_count=fails[top_fail] if top_fail else 0,
+        top_fail_count=top_count,
         cpk_t01=cpk,
         worst_machine_id=worst_id,
         worst_machine_n=worst_n,
