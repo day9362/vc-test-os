@@ -403,10 +403,18 @@ function pageBlocks() {
   if (summaryError.value) blocks.push({ kind: 'text', text: summaryError.value })
   else if (summaryLines.value.length) summaryLines.value.forEach((line, index) => blocks.push({ kind: 'text', text: `${index + 1}. ${line}` }))
   else blocks.push({ kind: 'text', text: '还没有生成总结。' })
-  if (limitFailOpt.value) add(shot('limitFail', '超上限、超下限'))
-  if (limitMeanOpt.value) add(shot('limitMean', '均值、最小值、最大值、上限、下限'))
-  if (splitOpt.value) add(shot('split', `相关性 · 同一项在${acrossLabel.value}的均值`))
-  else if (analysis.value && !analysis.value.note) blocks.push({ kind: 'text', text: analysisTarget.value === 'product' ? '现在只选了这一批。再选一批，才能把同一项按批次横向对比。' : '现在只有一个槽位，没有可横向对比的对象。' })
+  if (limitFailOpt.value) {
+    add(shot('limitFail', '超上限、超下限'))
+    blocks.push({ kind: 'text', text: '柱子是这一项超上限的片数。柱子越高，超出去的片越多。' })
+  }
+  if (limitMeanOpt.value) {
+    add(shot('limitMean', `同一项在${acrossLabel.value}的均值和上限下限`))
+    blocks.push({ kind: 'text', text: '柱子是这一项的均值。红色虚线是上限，橙色虚线是下限。柱子高过红色虚线，均值就超了上限。' })
+  }
+  if (splitOpt.value) {
+    add(shot('split', `同一项在${acrossLabel.value}的极差`))
+    blocks.push({ kind: 'text', text: '柱底是最小值，柱顶是最大值，高度是极差。' })
+  }
   if (analysis.value) {
     const current = analysis.value
     blocks.push({ kind: 'h2', text: '卡限项分析' })
@@ -579,6 +587,88 @@ async function exportPdf() {
   }
 }
 
+const batchMarks = ['一', '二', '三', '四', '五', '六']
+const showQuiet = ref(false)
+const censusOpen = ref(false)
+function pieceCount(slice: AnalysisSlice) {
+  return slice.items.reduce((max, item) => Math.max(max, item.n), 0)
+}
+const compareHeads = computed(() => {
+  const slices = acrossSlices.value
+  const kind = analysisTarget.value === 'product' ? '批次' : (analysis.value?.slots.length ? '槽位' : '机台')
+  return slices.map((slice, index) => ({
+    label: `${kind}${batchMarks[index] ?? index + 1}`,
+    name: slice.name,
+    n: pieceCount(slice),
+    color: tk.value.chart[index % 6],
+    slice,
+  }))
+})
+function itemNotable(item: LimitItem | undefined) {
+  if (!item) return false
+  if (item.high_fail || item.low_fail) return true
+  if (item.margin_high != null && item.margin_high < 0.3) return true
+  return item.trend === '后半段升高' || item.trend === '后半段降低'
+}
+function rangeSplit(name: string) {
+  const rows = compareHeads.value
+    .map((head) => sliceItem(head.slice, name))
+    .filter((item): item is LimitItem => !!item && item.n >= 30 && item.range != null)
+  if (rows.length < 2) return false
+  const ranges = rows.map((item) => item.range as number)
+  const low = Math.min(...ranges)
+  return low > 0 && Math.max(...ranges) >= low * 2
+}
+function rowNotable(name: string) {
+  if (compareHeads.value.length > 1) return compareHeads.value.some((head) => itemNotable(sliceItem(head.slice, name))) || rangeSplit(name)
+  return itemNotable(analysis.value?.overall.items.find((item) => item.item === name))
+}
+const visibleItemNames = computed(() => {
+  const names = orderedItemNames.value
+  if (showQuiet.value) return names
+  const kept = names.filter(rowNotable)
+  return kept.length ? kept : names
+})
+const hiddenCount = computed(() => orderedItemNames.value.filter((name) => !rowNotable(name)).length)
+function failClass(value: number | undefined) {
+  return value ? 't-danger' : ''
+}
+function marginClass(value: number | null | undefined) {
+  return value != null && value < 0.3 ? 'cell-warn' : ''
+}
+function countClass(value: number | undefined) {
+  return value != null && value > 0 && value < 30 ? 'muted' : ''
+}
+function rangeClass(name: string, item: LimitItem | undefined) {
+  if (!item?.range || !rangeSplit(name)) return ''
+  const ranges = compareHeads.value.map((head) => sliceItem(head.slice, name)?.range ?? 0)
+  return item.range >= Math.max(...ranges) ? 'cell-warn' : ''
+}
+function scaledNames(names: string[]) {
+  const temps = names.filter((name) => name.startsWith('Temp_'))
+  return temps.length ? temps : names
+}
+function detailTip(name: string) {
+  const heads = compareHeads.value
+  if (heads.length < 2) return name
+  const lines = [name]
+  for (const head of heads) {
+    const item = sliceItem(head.slice, name)
+    if (!item) {
+      lines.push(`${head.label} ${head.name} 没有这项`)
+      continue
+    }
+    lines.push(`${head.label} ${head.name} ${item.n} 片 均值 ${meas(name, item.mean)} 最小 ${meas(name, item.minimum)} 最大 ${meas(name, item.maximum)} 上限 ${meas(name, item.high)} 下限 ${meas(name, item.low)} 超上限 ${item.high_fail} 片 超下限 ${item.low_fail} 片`)
+  }
+  return lines.join('<br/>')
+}
+function unitOf(name: string) {
+  if (name === 'power_w' || name === '功率') return 'W'
+  if (name.includes('Rc')) return '℃/W'
+  if (name === '室温' || name.startsWith('Temp_') || name.startsWith('temp_')) return '℃'
+  return ''
+}
+
 const machineYieldOpt = computed(() => {
   const t = tk.value
   const rows = report.value?.machine_yield ?? []
@@ -588,7 +678,7 @@ const machineYieldOpt = computed(() => {
     xAxis: { type: 'category', data: rows.map((row) => row.machine_id) },
     yAxis: { type: 'value', min: rates.length ? Math.min(90, Math.floor(Math.min(...rates) / 5) * 5) : 0, max: 100 },
     series: [{
-      type: 'bar', barWidth: '50%',
+      name: '良率', unit: '%', role: '良率', type: 'bar', barWidth: '50%',
       data: rates.map((value) => ({ value, itemStyle: { color: value < 97 ? t.danger : t.chart[0] } })),
       label: { show: true, position: 'top', fontSize: 10, color: t['text-2'], formatter: '{c}%' },
     }],
@@ -607,9 +697,9 @@ const t01Opt = computed(() => {
     grouped.set(name, rows)
   }
   const labels = [...grouped.keys()]
-  const means = [...grouped.values()].map((rows) => +(rows.reduce((sum, value) => sum + value, 0) / rows.length).toFixed(3))
+  const means = [...grouped.values()].map((rows) => +(rows.reduce((sum, value) => sum + value, 0) / rows.length).toFixed(2))
   const spec = analysis.value?.overall.items.find((item) => item.item === 'Temp_T0-T1')
-  const limitText = (name: string, value: number | null | undefined) => value == null ? `${name} —` : `${name} ${value.toFixed(3)} ℃`
+  const limitText = (name: string, value: number | null | undefined) => value == null ? `${name} —` : `${name} ${value.toFixed(2)} ℃`
   return {
     grid: { left: 48, right: 16, top: 28, bottom: 36 },
     tooltip: {
@@ -618,7 +708,7 @@ const t01Opt = computed(() => {
         const row = (Array.isArray(raw) ? raw[0] : raw) as { axisValue?: string; data?: { value?: number; n?: number }; marker?: string }
         return [
           row.axisValue ?? '',
-          `${row.marker ?? ''}均值 ${row.data?.value ?? ''} ℃`,
+          `${row.marker ?? ''}Temp_T0-T1 均值 ${row.data?.value ?? ''} ℃`,
           `${row.data?.n ?? 0} 片`,
           limitText('上限', spec?.high),
           limitText('下限', spec?.low),
@@ -633,7 +723,7 @@ const t01Opt = computed(() => {
       barWidth: '46%',
       data: means.map((value, index) => ({ value, n: grouped.get(labels[index])?.length ?? 0 })),
       itemStyle: { color: t.chart[0] },
-      label: { show: true, position: 'top', fontSize: 11, color: t['text-2'], formatter: (item: { value?: number }) => `${Number(item.value).toFixed(3)} ℃` },
+      label: { show: true, position: 'top', fontSize: 11, color: t['text-2'], formatter: (item: { value?: number }) => `${Number(item.value).toFixed(2)} ℃` },
     }],
   }
 })
@@ -661,7 +751,7 @@ const slotAmbientOpt = computed(() => {
         const rows = (Array.isArray(raw) ? raw : [raw]) as { marker?: string; seriesName?: string; value?: number | null; data?: { serial?: string }; axisValue?: string }[]
         const visible = rows.filter((row) => row.value != null)
         if (!visible.length) return ''
-        const body = visible.map((row) => `${row.marker ?? ''}${row.seriesName ?? ''} ${row.data?.serial ?? ''} ${row.value} ℃`)
+        const body = visible.map((row) => `${row.marker ?? ''}${row.seriesName ?? ''} ${row.data?.serial ?? ''} 室温 单片 ${Number(row.value).toFixed(2)} ℃`)
         return [visible[0].axisValue ?? '', ...body].join('<br/>')
       },
     },
@@ -697,8 +787,8 @@ const paretoOpt = computed(() => {
     xAxis: { type: 'category', data: rows.map((row) => row.item), axisLabel: { interval: 0, rotate: 20 } },
     yAxis: [{ type: 'value', name: '片' }, { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } }],
     series: [
-      { name: '不合格片数', type: 'bar', data: rows.map((row) => row.count), itemStyle: { color: t.danger } },
-      { name: '占本批', type: 'line', yAxisIndex: 1, data: rate, itemStyle: { color: t.chart[1] } },
+      { name: '不合格片数', unit: '片', role: '片数', type: 'bar', data: rows.map((row) => row.count), itemStyle: { color: t.danger } },
+      { name: '占本批', unit: '%', role: '占比', type: 'line', yAxisIndex: 1, data: rate, itemStyle: { color: t.chart[1] } },
     ],
   }
 })
@@ -708,12 +798,12 @@ const profileOpt = computed(() => {
   const profile = report.value?.delta_profile
   if (!profile?.items.length) return null
   const series = list.value.map((batch, index) => ({
-    name: batch.batch_id, type: 'line', connectNulls: false, data: profile.mean[batch.batch_id] ?? [], itemStyle: { color: t.chart[index % 6] },
+    name: batch.batch_id, unit: '℃', role: '均值', type: 'line', connectNulls: false, data: profile.mean[batch.batch_id] ?? [], itemStyle: { color: t.chart[index % 6] },
   }))
-  if (profile.p95) series.push({ name: 'P95', type: 'line', connectNulls: false, data: profile.p95, itemStyle: { color: t.warn } })
+  if (profile.p95) series.push({ name: 'P95', unit: '℃', role: 'P95', type: 'line', connectNulls: false, data: profile.p95, itemStyle: { color: t.warn } })
   if (profile.limit.some((value) => value != null)) {
     series.push({
-      name: '上限', type: 'line', connectNulls: false, showSymbol: true, symbol: 'circle', symbolSize: 6,
+      name: '上限', unit: '℃', role: '上限', type: 'line', connectNulls: false, showSymbol: true, symbol: 'circle', symbolSize: 6,
       data: profile.limit, lineStyle: { type: 'dashed', color: t.danger }, itemStyle: { color: t.danger },
     })
   }
@@ -728,57 +818,130 @@ const profileOpt = computed(() => {
 
 const limitFailOpt = computed(() => {
   const items = analysis.value?.overall.items ?? []
-  if (!items.length) return null
+  const names = orderedItemNames.value
+  const heads = compareHeads.value
   const t = tk.value
+  if (heads.length > 1 && names.length) {
+    return {
+      tooltip: { formatter: (params: { axisValue?: string; name?: string } | { axisValue?: string; name?: string }[]) => detailTip(String((Array.isArray(params) ? params[0] : params)?.axisValue || (Array.isArray(params) ? params[0] : params)?.name || '')) },
+      grid: { left: 36, right: 16, top: 36, bottom: 8, containLabel: true },
+      legend: { type: 'scroll', data: heads.map((head) => head.label) },
+      xAxis: { type: 'category', data: names, axisLabel: { interval: 0, rotate: 40 } },
+      yAxis: { type: 'value', minInterval: 1 },
+      series: heads.map((head) => ({
+        name: head.label, unit: '片', role: '超上限', type: 'bar',
+        data: names.map((name) => sliceItem(head.slice, name)?.high_fail ?? 0),
+        itemStyle: { color: head.color },
+      })),
+    }
+  }
+  if (!items.length) return null
   return {
     grid: { left: 36, right: 12, top: 28, bottom: 48 },
     legend: { data: ['超上限', '超下限'] },
     xAxis: { type: 'category', data: items.map((item) => item.item), axisLabel: { interval: 0, rotate: 18 } },
     yAxis: { type: 'value', name: '片', minInterval: 1 },
     series: [
-      { name: '超上限', type: 'bar', data: items.map((item) => item.high_fail), itemStyle: { color: t.danger } },
-      { name: '超下限', type: 'bar', data: items.map((item) => item.low_fail), itemStyle: { color: t.chart[1] } },
+      { name: '超上限', unit: '片', role: '片数', type: 'bar', data: items.map((item) => item.high_fail), itemStyle: { color: t.danger } },
+      { name: '超下限', unit: '片', role: '片数', type: 'bar', data: items.map((item) => item.low_fail), itemStyle: { color: t.chart[1] } },
     ],
   }
 })
 
 const limitMeanOpt = computed(() => {
   const items = analysis.value?.overall.items ?? []
-  if (!items.length) return null
+  const names = scaledNames(orderedItemNames.value)
+  const heads = compareHeads.value
   const t = tk.value
+  if (heads.length > 1 && names.length) {
+    return {
+      tooltip: { formatter: (params: { axisValue?: string; name?: string } | { axisValue?: string; name?: string }[]) => detailTip(String((Array.isArray(params) ? params[0] : params)?.axisValue || (Array.isArray(params) ? params[0] : params)?.name || '')) },
+      grid: { left: 44, right: 16, top: 36, bottom: 8, containLabel: true },
+      legend: { type: 'scroll', data: heads.map((head) => head.label) },
+      xAxis: { type: 'category', data: names, axisLabel: { interval: 0, rotate: 40 } },
+      yAxis: { type: 'value' },
+      series: [
+        ...heads.map((head) => ({
+          name: head.label, role: '均值', type: 'bar',
+          data: names.map((name) => ({ value: sliceItem(head.slice, name)?.mean ?? null, unit: unitOf(name) })),
+          itemStyle: { color: head.color },
+        })),
+        { name: '上限', role: '上限', type: 'line', data: names.map((name) => ({ value: sliceItem(heads[0].slice, name)?.high ?? analysis.value?.overall.items.find((item) => item.item === name)?.high ?? null, unit: unitOf(name) })), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: t.danger } },
+        { name: '下限', role: '下限', type: 'line', data: names.map((name) => ({ value: sliceItem(heads[0].slice, name)?.low ?? analysis.value?.overall.items.find((item) => item.item === name)?.low ?? null, unit: unitOf(name) })), symbol: 'none', lineStyle: { type: 'dashed' }, itemStyle: { color: t.warn } },
+      ],
+    }
+  }
+  if (!items.length) return null
   return {
     grid: { left: 44, right: 12, top: 28, bottom: 48 },
     legend: { data: ['均值', '最大值', '最小值', '上限', '下限'] },
     xAxis: { type: 'category', data: items.map((item) => item.item), axisLabel: { interval: 0, rotate: 18 } },
     yAxis: { type: 'value' },
     series: [
-      { name: '均值', type: 'bar', data: items.map((item) => item.mean), itemStyle: { color: t.chart[0] } },
-      { name: '最大值', type: 'line', data: items.map((item) => item.maximum), symbol: 'triangle', symbolSize: 9, itemStyle: { color: t.chart[2] } },
-      { name: '最小值', type: 'line', data: items.map((item) => item.minimum), symbol: 'diamond', symbolSize: 8, itemStyle: { color: t.chart[4] } },
-      { name: '上限', type: 'line', data: items.map((item) => item.high), symbol: 'none', itemStyle: { color: t.danger } },
-      { name: '下限', type: 'line', data: items.map((item) => item.low), symbol: 'none', itemStyle: { color: t.warn } },
+      { name: '均值', role: '均值', type: 'bar', data: items.map((item) => ({ value: item.mean, unit: unitOf(item.item) })), itemStyle: { color: t.chart[0] } },
+      { name: '最大值', role: '最大值', type: 'line', data: items.map((item) => ({ value: item.maximum, unit: unitOf(item.item) })), symbol: 'triangle', symbolSize: 9, itemStyle: { color: t.chart[2] } },
+      { name: '最小值', role: '最小值', type: 'line', data: items.map((item) => ({ value: item.minimum, unit: unitOf(item.item) })), symbol: 'diamond', symbolSize: 8, itemStyle: { color: t.chart[4] } },
+      { name: '上限', role: '上限', type: 'line', data: items.map((item) => ({ value: item.high, unit: unitOf(item.item) })), symbol: 'none', itemStyle: { color: t.danger } },
+      { name: '下限', role: '下限', type: 'line', data: items.map((item) => ({ value: item.low, unit: unitOf(item.item) })), symbol: 'none', itemStyle: { color: t.warn } },
     ],
   }
 })
 
 const splitOpt = computed(() => {
   const data = analysis.value
-  const slices = acrossSlices.value
-  if (!data || data.note || slices.length < 2) return null
-  const names = orderedItemNames.value
+  const heads = compareHeads.value
+  if (!data || data.note || !heads.length) return null
+  const names = scaledNames(orderedItemNames.value)
   if (!names.length) return null
-  const t = tk.value
+  let axisMin = 0
+  for (const head of heads) {
+    for (const name of names) {
+      const low = sliceItem(head.slice, name)?.minimum
+      if (low != null && low < axisMin) axisMin = low
+    }
+  }
   return {
-    grid: { left: 44, right: 12, top: 28, bottom: 48 },
-    legend: { type: 'scroll' },
-    xAxis: { type: 'category', data: slices.map((slice) => slice.name), axisLabel: { interval: 0, rotate: 18 } },
-    yAxis: { type: 'value', name: '均值' },
-    series: names.map((name, index) => ({
-      name,
-      type: 'bar',
-      data: slices.map((slice) => sliceItem(slice, name)?.mean ?? null),
-      itemStyle: { color: t.chart[index % 6] },
-    })),
+    grid: { left: 44, right: 16, top: 36, bottom: 8, containLabel: true },
+    legend: { type: 'scroll', data: heads.map((head) => ({ name: head.label, itemStyle: { color: head.color } })) },
+    tooltip: {
+      formatter: (params: { axisValue?: string; seriesName?: string; data?: { value?: number | null; minimum?: number | null; maximum?: number | null } }[]) => {
+        const rows = Array.isArray(params) ? params : [params]
+        const itemName = String(rows[0]?.axisValue || '')
+        const lines = [itemName]
+        const seen = new Set<string>()
+        for (const row of rows) {
+          const point = row.data
+          const label = String(row.seriesName || '')
+          if (!point || point.maximum == null || seen.has(label)) continue
+          seen.add(label)
+          lines.push(`${label} 最小 ${meas(itemName, point.minimum)} 最大 ${meas(itemName, point.maximum)} 极差 ${meas(itemName, point.value)}`)
+        }
+        return lines.join('<br/>')
+      },
+    },
+    xAxis: { type: 'category', data: names, axisLabel: { interval: 0, rotate: 40 } },
+    yAxis: { type: 'value', min: axisMin },
+    series: heads.flatMap((head) => {
+      const points = names.map((name) => {
+        const item = sliceItem(head.slice, name)
+        if (item?.minimum == null || item.maximum == null) return null
+        const span = item.range ?? item.maximum - item.minimum
+        return { base: item.minimum, value: span, minimum: item.minimum, maximum: item.maximum, unit: unitOf(name) }
+      })
+      return [
+        {
+          name: head.label, type: 'bar', stack: head.label, silent: true,
+          data: points.map((point) => (point ? { value: point.base, unit: point.unit, spanBase: true } : null)),
+          itemStyle: { color: 'transparent' },
+          emphasis: { disabled: true },
+        },
+        {
+          name: head.label, role: '极差', type: 'bar', stack: head.label,
+          data: points.map((point) => (point ? { value: point.value, minimum: point.minimum, maximum: point.maximum, unit: point.unit } : null)),
+          itemStyle: { color: head.color },
+        },
+      ]
+    }),
   }
 })
 
@@ -791,8 +954,8 @@ const compareOpt = computed(() => {
     xAxis: { type: 'category', data: rows.map((row) => row.batch_id) },
     yAxis: [{ type: 'value', name: '良率 %', min: 0, max: 100 }, { type: 'value', name: 'Rc', scale: true }],
     series: [
-      { name: '良率', type: 'bar', data: rows.map((row) => row.yield_rate), itemStyle: { color: t.chart[0] } },
-      { name: 'Rc 均值', type: 'line', yAxisIndex: 1, data: rows.map((row) => row.rc_mean || null), itemStyle: { color: t.chart[2] } },
+      { name: '良率', unit: '%', role: '良率', type: 'bar', data: rows.map((row) => row.yield_rate), itemStyle: { color: t.chart[0] } },
+      { name: 'Rc 均值', unit: '℃/W', role: '均值', type: 'line', yAxisIndex: 1, data: rows.map((row) => row.rc_mean || null), itemStyle: { color: t.chart[2] } },
     ],
   }
 })
@@ -836,11 +999,14 @@ const compareOpt = computed(() => {
         <template #actions>
           <button type="button" class="btn btn-sm" :disabled="summaryBusy" @click="loadSummary">{{ summaryBusy ? '正在写…' : '生成总结' }}</button>
         </template>
-        <div class="row">
+        <div class="row batch-switch">
           <div class="seg">
             <button type="button" :aria-pressed="analysisTarget === 'product'" @click="analysisTarget = 'product'">产品</button>
             <button type="button" :aria-pressed="analysisTarget === 'machine'" @click="analysisTarget = 'machine'">机台</button>
           </div>
+          <p v-if="compareHeads.length" class="batch-key">
+            <span v-for="head in compareHeads" :key="head.name" class="legend-bit"><i :style="{ background: head.color }"></i>{{ head.label }} {{ head.name }} · {{ head.n < 30 ? '不足片' : `${head.n} 片` }}</span>
+          </p>
         </div>
         <p v-if="summaryError" class="t-danger">{{ summaryError }}</p>
         <ol v-else-if="summaryLines.length" class="sum">
@@ -850,18 +1016,20 @@ const compareOpt = computed(() => {
         <div v-if="limitFailOpt || limitMeanOpt" class="grid g-2 chart-row">
           <div v-if="limitFailOpt">
             <p class="fs-sm fw-6">超上限、超下限</p>
-            <EChart :ref="(el) => takeChart('limitFail', el)" :option="limitFailOpt" :height="220" />
+            <p class="fs-xs muted">柱子是这一项超上限的片数。柱子越高，超出去的片越多。</p>
+            <EChart :ref="(el) => takeChart('limitFail', el)" :option="limitFailOpt" :height="280" />
           </div>
           <div v-if="limitMeanOpt">
-            <p class="fs-sm fw-6">均值、最小值、最大值、上限、下限</p>
-            <EChart :ref="(el) => takeChart('limitMean', el)" :option="limitMeanOpt" :height="220" />
+            <p class="fs-sm fw-6">同一项在{{ acrossLabel }}的均值和上限下限</p>
+            <p class="fs-xs muted">柱子是这一项的均值。红色虚线是上限，橙色虚线是下限。柱子高过红色虚线，均值就超了上限。</p>
+            <EChart :ref="(el) => takeChart('limitMean', el)" :option="limitMeanOpt" :height="280" />
           </div>
         </div>
         <div v-if="splitOpt" class="chart-row">
-          <p class="fs-sm fw-6">相关性 · 同一项在{{ acrossLabel }}的均值</p>
-          <EChart :ref="(el) => takeChart('split', el)" :option="splitOpt" :height="220" />
+          <p class="fs-sm fw-6">同一项在{{ acrossLabel }}的极差</p>
+          <p class="fs-xs muted">柱底是最小值，柱顶是最大值，高度是极差。</p>
+          <EChart :ref="(el) => takeChart('split', el)" :option="splitOpt" :height="300" />
         </div>
-        <p v-else-if="analysis && !analysis.note" class="fs-sm muted">{{ analysisTarget === 'product' ? '现在只选了这一批。再选一批，才能把同一项按批次横向对比。' : '现在只有一个槽位，没有可横向对比的对象。' }}</p>
         <p v-if="summaryModel" class="fs-xs muted">{{ summaryModel }}</p>
       </Panel>
 
@@ -1044,6 +1212,10 @@ const compareOpt = computed(() => {
 .rh h1 { font-size: var(--fs-xl); font-family: var(--font-mono); margin: 2px 0; }
 .batch-sum + .batch-sum { margin-top: 14px; }
 .sum { margin: 4px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
+.batch-switch { flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 8px; }
+.batch-key { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; }
+.legend-bit { display: inline-flex; align-items: center; gap: 6px; }
+.legend-bit i { width: 10px; height: 10px; display: inline-block; }
 .chart-row { margin-top: 12px; }
 .preset-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .figure { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
