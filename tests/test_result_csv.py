@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from app.service.runs.result_csv import build_result_export, header_for, points_from_body, raw_filename, render_raw
+from app.service.runs.result_csv import build_result_export, choose_final_sample, header_for, points_from_body, raw_filename, render_raw
 
 
 def _row(**kwargs):
@@ -94,6 +94,14 @@ class ResultCsvTests(unittest.TestCase):
         self.assertIsNone(header_for("Temp_T1_60s"))
         self.assertEqual(header_for("Temp_T0-T1"), "delta_t0_t1")
         self.assertEqual(header_for("Force_F14"), "force_14")
+
+    def test_final_sample_follows_plan_duration(self):
+        samples = [{"t_s": 55, "temps": [{"channel": "T0", "value": 38}]}, {"t_s": 180, "temps": [{"channel": "T0", "value": 44}]}]
+        self.assertEqual(choose_final_sample(samples, 180)["t_s"], 180)
+        self.assertEqual(choose_final_sample(samples, 10)["t_s"], 55)
+        short = [{"t_s": 8, "temps": []}, {"t_s": 10, "temps": []}, {"t_s": 180, "temps": []}]
+        self.assertEqual(choose_final_sample(short, 10)["t_s"], 10)
+        self.assertIsNone(choose_final_sample([], 180))
 
     def test_raw_filename_and_points(self):
         name = raw_filename("B-1", "SN/1", 1762017000000, "R1")
