@@ -111,6 +111,7 @@ class ReportExportOut(BaseModel):
 
 class ReportSummaryIn(BaseModel):
     batch_ids: list[str]
+    mode: str = "single"
 
 
 class ReportUsageOut(BaseModel):
@@ -122,6 +123,7 @@ class ReportNarrativeOut(BaseModel):
     lines: list[str]
     model: str
     usage: ReportUsageOut
+    looked: str = ""
 
 
 class LimitItemOut(BaseModel):
@@ -176,6 +178,19 @@ class AnalysisSliceOut(BaseModel):
     fail_groups: list[FailGroupOut] = []
 
 
+class SlotCensusOut(BaseModel):
+    slot: str
+    tested: int
+    passed: int
+
+
+class BatchCensusOut(BaseModel):
+    batch: str
+    tested: int
+    passed: int
+    slots: list[SlotCensusOut] = []
+
+
 class AnalysisOut(BaseModel):
     note: str = ""
     tested: int = 0
@@ -188,6 +203,7 @@ class AnalysisOut(BaseModel):
     batches: list[AnalysisSliceOut] = []
     machines: list[AnalysisSliceOut] = []
     slots: list[AnalysisSliceOut] = []
+    census: list[BatchCensusOut] = []
     process: list[ProcessNoteOut] = []
 
 

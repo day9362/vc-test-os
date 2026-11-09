@@ -25,4 +25,4 @@ async def report_summary(
     user: UserEntity = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ReportNarrativeOut:
-    return await ReportService(session).summary(body.batch_ids, user)
+    return await ReportService(session).summary(body.batch_ids, user, body.mode)

@@ -33,7 +33,7 @@ from app.repo.audit_repo import AuditRepo
 from app.repo.run_repo import RunRepo
 from app.service.reports.analysis_math import item_sort_key, usable
 from app.service.reports.figures import batch_key
-from app.service.reports.narrative import grounded_lines, polish_summary_lines, request_summary, unify_words
+from app.service.reports.narrative import grounded_lines, polish_summary_lines, request_expert_summary, unify_words
 from app.service.reports.pdf import PdfFigure, chart_bars, render_page_pdf, render_report_pdf
 from app.service.reports.store import reports_dir, save_report_pdf
 from app.service.runs.cluster_ingest import fleet_machine_ids
@@ -105,13 +105,15 @@ class ReportService:
             compare=[BatchCompareOut(batch_id=item.batch_id, yield_rate=round(100 * item.passed / item.tested, 2), rc_mean=item.rc_mean) for item in active],
         )
 
-    async def summary(self, batch_ids: list[str], user: UserEntity) -> ReportNarrativeOut:
+    async def summary(self, batch_ids: list[str], user: UserEntity, mode: str = "single") -> ReportNarrativeOut:
         ids = [item.strip() for item in batch_ids if item and item.strip()]
         if not ids:
             raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
+        if mode not in {"single", "cross"}:
+            raise AppError(400, "BAD_REQUEST", "mode 只能是 single 或 cross")
         from app.service.reports.analysis_service import AnalysisService
 
-        analysis = await AnalysisService(self.session).build(ids)
+        analysis, rows = await AnalysisService(self.session).load(ids)
         if analysis.note and not analysis.overall.items:
             raise AppError(400, "BAD_REQUEST", analysis.note)
         payload = analysis.model_dump(mode="json")
@@ -124,9 +126,11 @@ class ReportService:
         output_tokens = 0
         error: AppError | None = None
         lines: list[str] = []
+        looked = ""
         try:
-            text, input_tokens, output_tokens, model_name = await request_summary(payload, model_name)
-            lines = grounded_lines(text, payload)
+            text, evidence, input_tokens, output_tokens, model_name = await request_expert_summary(payload, model_name, mode, rows, self.session)
+            lines = grounded_lines(text, evidence)
+            looked = str(evidence.get("looked") or "")
         except AppError as exc:
             error = exc
         await UsageService(self.session).record(
@@ -150,7 +154,7 @@ class ReportService:
         await self.session.commit()
         if error is not None:
             raise error
-        return ReportNarrativeOut(lines=lines, model=model_name, usage=ReportUsageOut(input=input_tokens, output=output_tokens))
+        return ReportNarrativeOut(lines=lines, model=model_name, usage=ReportUsageOut(input=input_tokens, output=output_tokens), looked=looked)
 
     async def saved_summary(self, batch_ids: list[str]) -> ReportNarrativeOut:
         ids = [item.strip() for item in batch_ids if item and item.strip()]

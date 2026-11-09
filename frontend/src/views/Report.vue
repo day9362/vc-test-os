@@ -99,6 +99,7 @@ interface AnalysisData {
   batches: AnalysisSlice[]
   machines: AnalysisSlice[]
   slots: AnalysisSlice[]
+  census?: { batch: string; tested: number; passed: number; slots: { slot: string; tested: number; passed: number }[] }[]
   process: { serial_number: string; item: string; shape: string }[]
 }
 const analysis = ref<AnalysisData | null>(null)
@@ -107,6 +108,22 @@ const summaryLines = ref<string[]>([])
 const summaryModel = ref('')
 const summaryError = ref('')
 const summaryBusy = ref(false)
+const summaryMode = ref<'single' | 'cross' | ''>('')
+const summaryOpen = ref(true)
+const summaryLooked = ref('')
+function summaryLead(line: string) {
+  if (line === '已暴露的卡限项' || line === '潜在危险项') return line
+  const parts = line.split(/(?<=。)/)
+  let lead = ''
+  for (const part of parts) {
+    if (part.includes('怀疑产品问题') || part.includes('怀疑这台机') || part.includes('怀疑这些槽位')) lead += part
+    else break
+  }
+  return lead
+}
+function summaryBreak(line: string, index: number) {
+  return index > 0 && (summaryLead(line) !== '' || line.startsWith('先看超限项') || line.startsWith('按同一项对齐') || /^(Temp_|室温|power_w)/.test(line))
+}
 interface FigurePanel {
   title: string
   option: Record<string, unknown>
@@ -150,7 +167,9 @@ async function load() {
   analysis.value = null
   summaryLines.value = []
   summaryModel.value = ''
+  summaryLooked.value = ''
   summaryError.value = ''
+  summaryMode.value = ''
   figures.value = []
   figureError.value = ''
   try {
@@ -158,7 +177,6 @@ async function load() {
     report.value = await api<ReportData>(`/reports/data?batch_ids=${query}`)
     analysis.value = await api<AnalysisData>(`/reports/analysis?batch_ids=${query}`).catch(() => null)
     await loadFigures().catch(() => { figures.value = [] })
-    await loadSavedSummary().catch(() => { summaryLines.value = [] })
   } catch (err) {
     report.value = null
     error.value = err instanceof Error ? err.message : '报告加载失败'
@@ -189,8 +207,40 @@ const acrossLabel = computed(() => {
   if (analysisTarget.value === 'product') return '各批次'
   return analysis.value?.slots.length ? '各槽位' : '各机台'
 })
+function yieldText(passed: number, tested: number) {
+  if (!tested) return '—'
+  return `${(100 * passed / tested).toFixed(2)}%`
+}
+const censusTables = computed(() => (analysis.value?.census ?? []).map((batch) => {
+  const slots = batch.slots.map((slot) => {
+    const [machine, index] = slot.slot.split('#')
+    return { slot: slot.slot, machine: machine || slot.slot, index: index || '—', tested: slot.tested, yield: yieldText(slot.passed, slot.tested) }
+  })
+  return {
+    batch: batch.batch,
+    machines: [...new Set(slots.map((slot) => slot.machine))].join('、') || '—',
+    tested: batch.tested,
+    yield: yieldText(batch.passed, batch.tested),
+    slots,
+  }
+}))
 function sliceItem(slice: AnalysisSlice, name: string) {
   return slice.items.find((item) => item.item === name)
+}
+function overallItem(name: string) {
+  return analysis.value?.overall.items.find((item) => item.item === name)
+}
+function limitCell(name: string, side: 'low' | 'high') {
+  const heads = compareHeads.value
+  if (heads.length > 1) {
+    const parts = heads.map((head) => ({ label: head.label, value: sliceItem(head.slice, name)?.[side] }))
+    const known = parts.filter((part) => part.value != null)
+    if (!known.length) return '—'
+    const first = known[0].value
+    if (known.length === parts.length && known.every((part) => part.value === first)) return meas(name, first)
+    return known.map((part) => `${part.label} ${meas(name, part.value)}`).join(' · ')
+  }
+  return meas(name, overallItem(name)?.[side])
 }
 function itemKey(name: string): [number, number, number, string] {
   const bare = name.replace(/^Temp_/i, '')
@@ -216,6 +266,81 @@ const failText = computed(() => {
   if (!groups.length) parts.push('卡限项都合格')
   return `${parts.join('，')}。`
 })
+const batchMarks = ['一', '二', '三', '四', '五', '六']
+const showQuiet = ref(false)
+const censusOpen = ref(false)
+function pieceCount(slice: AnalysisSlice) {
+  return slice.items.reduce((max, item) => Math.max(max, item.n), 0)
+}
+const compareHeads = computed(() => {
+  const slices = acrossSlices.value
+  const kind = analysisTarget.value === 'product' ? '批次' : (analysis.value?.slots.length ? '槽位' : '机台')
+  return slices.map((slice, index) => ({
+    label: `${kind}${batchMarks[index] ?? index + 1}`,
+    name: slice.name,
+    n: pieceCount(slice),
+    color: tk.value.chart[index % 6],
+    slice,
+  }))
+})
+function itemNotable(item: LimitItem | undefined) {
+  if (!item) return false
+  if (item.high_fail || item.low_fail) return true
+  if (item.margin_high != null && item.margin_high < 0.3) return true
+  return item.trend === '后半段升高' || item.trend === '后半段降低'
+}
+function rangeSplit(name: string) {
+  const rows = compareHeads.value
+    .map((head) => sliceItem(head.slice, name))
+    .filter((item): item is LimitItem => !!item && item.n >= 30 && item.range != null)
+  if (rows.length < 2) return false
+  const ranges = rows.map((item) => item.range as number)
+  const low = Math.min(...ranges)
+  return low > 0 && Math.max(...ranges) >= low * 2
+}
+function rowNotable(name: string) {
+  if (compareHeads.value.length > 1) return compareHeads.value.some((head) => itemNotable(sliceItem(head.slice, name))) || rangeSplit(name)
+  return itemNotable(analysis.value?.overall.items.find((item) => item.item === name))
+}
+const visibleItemNames = computed(() => {
+  const names = orderedItemNames.value
+  if (showQuiet.value) return names
+  const kept = names.filter(rowNotable)
+  return kept.length ? kept : names
+})
+const hiddenCount = computed(() => orderedItemNames.value.filter((name) => !rowNotable(name)).length)
+function failClass(value: number | undefined) {
+  return value ? 't-danger' : ''
+}
+function marginClass(value: number | null | undefined) {
+  return value != null && value < 0.3 ? 'cell-warn' : ''
+}
+function countClass(value: number | undefined) {
+  return value != null && value > 0 && value < 30 ? 'muted' : ''
+}
+function rangeClass(name: string, item: LimitItem | undefined) {
+  if (!item?.range || !rangeSplit(name)) return ''
+  const ranges = compareHeads.value.map((head) => sliceItem(head.slice, name)?.range ?? 0)
+  return item.range >= Math.max(...ranges) ? 'cell-warn' : ''
+}
+function scaledNames(names: string[]) {
+  const temps = names.filter((name) => name.startsWith('Temp_'))
+  return temps.length ? temps : names
+}
+function detailTip(name: string) {
+  const heads = compareHeads.value
+  if (heads.length < 2) return name
+  const lines = [name]
+  for (const head of heads) {
+    const item = sliceItem(head.slice, name)
+    if (!item) {
+      lines.push(`${head.label} ${head.name} 没有这项`)
+      continue
+    }
+    lines.push(`${head.label} ${head.name} ${item.n} 片 均值 ${meas(name, item.mean)} 最小 ${meas(name, item.minimum)} 最大 ${meas(name, item.maximum)} 上限 ${meas(name, item.high)} 下限 ${meas(name, item.low)} 超上限 ${item.high_fail} 片 超下限 ${item.low_fail} 片`)
+  }
+  return lines.join('<br/>')
+}
 const orderedItemNames = computed(() => [...(analysis.value?.overall.items ?? [])].map((item) => item.item).sort((left, right) => {
   const a = itemKey(left)
   const b = itemKey(right)
@@ -270,21 +395,28 @@ async function loadSavedSummary() {
   summaryModel.value = body.model || ''
 }
 
-async function loadSummary() {
+async function loadSummary(mode: 'single' | 'cross') {
   if (!asked.value.length || summaryBusy.value) return
+  if (mode === 'cross' && list.value.length < 2) return
+  summaryOpen.value = true
   summaryBusy.value = true
+  summaryMode.value = mode
   summaryError.value = ''
+  summaryLines.value = []
+  summaryLooked.value = ''
   try {
-    const body = await api<{ lines: string[]; model: string }>('/reports/summary', {
+    const body = await api<{ lines: string[]; model: string; looked?: string }>('/reports/summary', {
       method: 'POST',
-      body: JSON.stringify({ batch_ids: asked.value }),
+      body: JSON.stringify({ batch_ids: asked.value, mode }),
     })
     summaryLines.value = body.lines
     summaryModel.value = body.model
+    summaryLooked.value = body.looked || ''
   } catch (err) {
     summaryLines.value = []
     summaryModel.value = ''
-    summaryError.value = err instanceof Error ? err.message : '总结没有生成'
+    summaryLooked.value = ''
+    summaryError.value = err instanceof Error ? err.message : '分析没有生成'
   } finally {
     summaryBusy.value = false
   }
@@ -302,19 +434,22 @@ async function createFigure(preset = '') {
   if ((!prompt && !kind) || figureBusy.value || !asked.value.length) return
   figureBusy.value = true
   figureError.value = ''
+  let createdId = ''
   try {
     const created = await api<{ figure_id: string }>('/reports/figures', {
       method: 'POST',
       body: JSON.stringify({ batch_ids: asked.value, prompt, preset: kind }),
     })
+    createdId = created.figure_id
     if (!kind) figurePrompt.value = ''
     await loadFigures()
-    await followFigure(created.figure_id)
   } catch (err) {
     figureError.value = err instanceof Error ? err.message : '分析没有开始'
+    return
   } finally {
     figureBusy.value = false
   }
+  if (createdId) await followFigure(createdId)
 }
 
 async function followFigure(id: string) {
@@ -400,9 +535,17 @@ function pageBlocks() {
     blocks.push({ kind: 'text', text: `测试数 ${current.tested} 片，中止 ${current.aborted}。良率 ${current.yield_rate.toFixed(2)}%。不合格 ${current.failed} 片。${rc}。${cpk}。机台 ${current.machine_count} 台。` })
   }
   blocks.push({ kind: 'h2', text: `AI 总结 · ${analysisTarget.value === 'product' ? '产品' : '机台'}` })
-  if (summaryError.value) blocks.push({ kind: 'text', text: summaryError.value })
-  else if (summaryLines.value.length) summaryLines.value.forEach((line, index) => blocks.push({ kind: 'text', text: `${index + 1}. ${line}` }))
-  else blocks.push({ kind: 'text', text: '还没有生成总结。' })
+  for (const table of censusTables.value) {
+    blocks.push({
+      kind: 'table',
+      title: '机台槽位片数和良率',
+      columns: ['机台', '槽位', '片数', '良率'],
+      rows: [
+        [table.machines, '整批', String(table.tested), table.yield],
+        ...table.slots.map((slot) => [slot.machine, slot.index, String(slot.tested), slot.yield]),
+      ],
+    })
+  }
   if (limitFailOpt.value) {
     add(shot('limitFail', '超上限、超下限'))
     blocks.push({ kind: 'text', text: '柱子是这一项超上限的片数。柱子越高，超出去的片越多。' })
@@ -415,79 +558,75 @@ function pageBlocks() {
     add(shot('split', `同一项在${acrossLabel.value}的极差`))
     blocks.push({ kind: 'text', text: '柱底是最小值，柱顶是最大值，高度是极差。' })
   }
+  else if (analysis.value && !analysis.value.note) blocks.push({ kind: 'text', text: analysisTarget.value === 'product' ? '现在只选了这一批。再选一批，才能把同一项按批次横向对比。' : '现在只有一个槽位，没有可横向对比的对象。' })
   if (analysis.value) {
     const current = analysis.value
     blocks.push({ kind: 'h2', text: '卡限项分析' })
     blocks.push({ kind: 'text', text: `有效 ${current.tested} 片 · 中止 ${current.aborted} · 未保留 ${current.discarded} · 无效读数 ${current.invalid}` })
     if (current.note) blocks.push({ kind: 'text', text: current.note })
-    else if (current.overall.items.length) {
+    else if (current.overall.items.length && compareHeads.value.length > 1) {
+      const heads = compareHeads.value
+      blocks.push({ kind: 'text', text: heads.map((head) => `${head.label} ${head.name} · ${head.n} 片`).join('；') })
       blocks.push({
         kind: 'table',
         title: '卡限项',
-        columns: ['项', '片数', '均值', '最小值', '最大值', '极差', '重复性', '超上限', '超下限', '偏移', '上限裕量', '下限裕量', '时间顺序'],
-        rows: current.overall.items.map((item) => [
-          item.item,
-          String(item.n),
-          meas(item.item, item.mean),
-          meas(item.item, item.minimum),
-          meas(item.item, item.maximum),
-          meas(item.item, item.range),
-          item.retest_serials ? `${meas(item.item, item.repeat_std)} 复测极差 ${meas(item.item, item.retest_range)}` : meas(item.item, item.repeat_std),
-          String(item.high_fail),
-          String(item.low_fail),
-          item.offset,
-          meas(item.item, item.margin_high),
-          meas(item.item, item.margin_low),
-          item.trend,
+        columns: ['项', '下限', '上限', ...heads.flatMap((head) => [`${head.label}片数`, `${head.label}均值`, `${head.label}极差`, `${head.label}超上限`, `${head.label}上限裕量`, `${head.label}时间顺序`])],
+        rows: visibleItemNames.value.map((name) => [
+          name,
+          limitCell(name, 'low'),
+          limitCell(name, 'high'),
+          ...heads.flatMap((head) => {
+            const item = sliceItem(head.slice, name)
+            return [String(item?.n ?? 0), meas(name, item?.mean), meas(name, item?.range), String(item?.high_fail ?? 0), meas(name, item?.margin_high), item?.trend || '—']
+          }),
         ]),
       })
-    } else blocks.push({ kind: 'text', text: '方案里没有可分析的上下限' })
-    if (acrossSlices.value.length > 1) {
-      const rows: string[][] = []
-      for (const name of orderedItemNames.value) {
-        for (const slice of acrossSlices.value) {
-          const item = sliceItem(slice, name)
-          rows.push([
+    } else if (current.overall.items.length) {
+      blocks.push({
+        kind: 'table',
+        title: '卡限项',
+        columns: ['项', '下限', '上限', '片数', '均值', '最小值', '最大值', '极差', '重复性', '超上限', '超下限', '偏移', '上限裕量', '下限裕量', '时间顺序'],
+        rows: visibleItemNames.value.map((name) => {
+          const item = overallItem(name)
+          return [
             name,
-            slice.name,
+            limitCell(name, 'low'),
+            limitCell(name, 'high'),
             String(item?.n ?? 0),
             meas(name, item?.mean),
             meas(name, item?.minimum),
             meas(name, item?.maximum),
             meas(name, item?.range),
+            item?.retest_serials ? `${meas(name, item?.repeat_std)} 复测极差 ${meas(name, item?.retest_range)}` : meas(name, item?.repeat_std),
             String(item?.high_fail ?? 0),
             String(item?.low_fail ?? 0),
-          ])
-        }
-      }
-      blocks.push({ kind: 'table', title: `相关性 · 同一项在${acrossLabel.value}`, columns: ['项', '分组', '片数', '均值', '最小值', '最大值', '极差', '超上限', '超下限'], rows })
+            item?.offset || '',
+            meas(name, item?.margin_high),
+            meas(name, item?.margin_low),
+            item?.trend || '',
+          ]
+        }),
+      })
+    } else blocks.push({ kind: 'text', text: '方案里没有可分析的上下限' })
+    if (compareHeads.value.length > 1) {
+      const heads = compareHeads.value
+      blocks.push({
+        kind: 'table',
+        title: `相关性 · 同一项在${acrossLabel.value}`,
+        columns: ['项', ...heads.map((head) => head.label)],
+        rows: visibleItemNames.value.map((name) => [
+          name,
+          ...heads.map((head) => {
+            const item = sliceItem(head.slice, name)
+            return `${meas(name, item?.mean)} · ${item?.n ?? 0} 片 · 超上限 ${item?.high_fail ?? 0} · 极差 ${meas(name, item?.range)}`
+          }),
+        ]),
+      })
     }
-    if (current.fail_rank.length) {
-      blocks.push({ kind: 'h2', text: '不合格项' })
-      blocks.push({ kind: 'text', text: failText.value })
-    }
-    for (const slice of shownSlices.value) {
-      blocks.push({ kind: 'text', text: `${slice.name} 中止 ${slice.aborted} · 未保留 ${slice.discarded}` })
-      for (const item of slice.items.filter((row) => row.high_fail || row.low_fail || slice.items.length <= 6)) {
-        blocks.push({ kind: 'text', text: `${item.item} 均值 ${meas(item.item, item.mean)}，极差 ${meas(item.item, item.range)}，超上限 ${item.high_fail} 片，超下限 ${item.low_fail} 片，${item.offset}` })
-      }
-    }
-    if (analysisTarget.value === 'machine' && current.slots.length) {
-      blocks.push({ kind: 'h2', text: '槽位' })
-      for (const slice of current.slots) {
-        blocks.push({ kind: 'text', text: `${slice.name}：${slice.items.map((item) => `${item.item} 均值 ${meas(item.item, item.mean)} 极差 ${meas(item.item, item.range)}`).join('；')}` })
-      }
-    }
-    if (current.process.length) {
-      blocks.push({ kind: 'h2', text: '过程' })
-      for (const note of current.process) blocks.push({ kind: 'text', text: `${note.serial_number} 的 ${note.item}：${note.shape}` })
-    }
-  }
-  if (findings.value.length) {
-    blocks.push({ kind: 'h2', text: '结果' })
-    for (const section of findings.value) {
-      if (findings.value.length > 1) blocks.push({ kind: 'text', text: section.batch_id })
-      section.lines.forEach((line, index) => blocks.push({ kind: 'text', text: `${index + 1}. ${line}` }))
+    if (summaryLines.value.length) {
+      blocks.push({ kind: 'h2', text: summaryMode.value === 'cross' ? '跨批次分析' : '单批次分析' })
+      summaryLines.value.forEach((line) => blocks.push({ kind: 'text', text: line }))
+      if (summaryLooked.value) blocks.push({ kind: 'text', text: summaryLooked.value })
     }
   }
   if (multi.value) add(shot('compare', '批次对比'))
@@ -534,27 +673,35 @@ function seriesType(panel: FigurePanel) {
   return String(first?.type || '')
 }
 
-function panelIsWide(panel: FigurePanel) {
-  const kind = seriesType(panel)
-  if (kind === 'heatmap' || kind === 'boxplot') return true
-  if (Array.isArray(panel.option?.yAxis) && panel.option.yAxis.length > 1) return true
-  const data = panel.option?.xAxis?.data
-  return Array.isArray(data) && data.length > 4
+function categoryCount(panel: FigurePanel) {
+  const across = panel.option?.xAxis?.data
+  const down = Array.isArray(panel.option?.yAxis) ? [] : panel.option?.yAxis?.data
+  return Math.max(Array.isArray(across) ? across.length : 0, Array.isArray(down) ? down.length : 0)
+}
+
+function scatterCount(panel: FigurePanel) {
+  const series = panel.option?.series
+  if (!Array.isArray(series)) return 0
+  return series.reduce((sum, item) => sum + (Array.isArray(item?.data) ? item.data.length : 0), 0)
 }
 
 function stackPanels(panels: FigurePanel[]) {
-  return panels.length !== 2 || panels.some(panelIsWide)
+  if (panels.length !== 2) return true
+  return panels.some((panel) => {
+    const kind = seriesType(panel)
+    if (kind === 'heatmap' || kind === 'boxplot' || kind === 'scatter' || kind === 'candlestick') return true
+    return categoryCount(panel) > 4
+  })
 }
 
 function panelHeight(panel: FigurePanel) {
   const kind = seriesType(panel)
-  const across = panel.option?.xAxis?.data
-  const down = Array.isArray(panel.option?.yAxis) ? [] : panel.option?.yAxis?.data
-  const count = Math.max(Array.isArray(across) ? across.length : 0, Array.isArray(down) ? down.length : 0)
-  if (kind === 'heatmap') return Math.min(520, Math.max(320, 140 + count * 36))
-  if (kind === 'boxplot') return 320
-  if (Array.isArray(panel.option?.yAxis)) return 300
-  return count > 6 ? 320 : 280
+  const count = categoryCount(panel)
+  if (kind === 'heatmap') return Math.min(640, Math.max(120, 120 + count * 32))
+  if (kind === 'scatter') return scatterCount(panel) > 200 ? 400 : 320
+  if (count > 8) return Math.min(640, 160 + count * 28)
+  if (count <= 6) return 260
+  return Math.min(520, 260 + (count - 6) * 24)
 }
 
 function reportFileName() {
@@ -587,81 +734,6 @@ async function exportPdf() {
   }
 }
 
-const batchMarks = ['一', '二', '三', '四', '五', '六']
-const showQuiet = ref(false)
-const censusOpen = ref(false)
-function pieceCount(slice: AnalysisSlice) {
-  return slice.items.reduce((max, item) => Math.max(max, item.n), 0)
-}
-const compareHeads = computed(() => {
-  const slices = acrossSlices.value
-  const kind = analysisTarget.value === 'product' ? '批次' : (analysis.value?.slots.length ? '槽位' : '机台')
-  return slices.map((slice, index) => ({
-    label: `${kind}${batchMarks[index] ?? index + 1}`,
-    name: slice.name,
-    n: pieceCount(slice),
-    color: tk.value.chart[index % 6],
-    slice,
-  }))
-})
-function itemNotable(item: LimitItem | undefined) {
-  if (!item) return false
-  if (item.high_fail || item.low_fail) return true
-  if (item.margin_high != null && item.margin_high < 0.3) return true
-  return item.trend === '后半段升高' || item.trend === '后半段降低'
-}
-function rangeSplit(name: string) {
-  const rows = compareHeads.value
-    .map((head) => sliceItem(head.slice, name))
-    .filter((item): item is LimitItem => !!item && item.n >= 30 && item.range != null)
-  if (rows.length < 2) return false
-  const ranges = rows.map((item) => item.range as number)
-  const low = Math.min(...ranges)
-  return low > 0 && Math.max(...ranges) >= low * 2
-}
-function rowNotable(name: string) {
-  if (compareHeads.value.length > 1) return compareHeads.value.some((head) => itemNotable(sliceItem(head.slice, name))) || rangeSplit(name)
-  return itemNotable(analysis.value?.overall.items.find((item) => item.item === name))
-}
-const visibleItemNames = computed(() => {
-  const names = orderedItemNames.value
-  if (showQuiet.value) return names
-  const kept = names.filter(rowNotable)
-  return kept.length ? kept : names
-})
-const hiddenCount = computed(() => orderedItemNames.value.filter((name) => !rowNotable(name)).length)
-function failClass(value: number | undefined) {
-  return value ? 't-danger' : ''
-}
-function marginClass(value: number | null | undefined) {
-  return value != null && value < 0.3 ? 'cell-warn' : ''
-}
-function countClass(value: number | undefined) {
-  return value != null && value > 0 && value < 30 ? 'muted' : ''
-}
-function rangeClass(name: string, item: LimitItem | undefined) {
-  if (!item?.range || !rangeSplit(name)) return ''
-  const ranges = compareHeads.value.map((head) => sliceItem(head.slice, name)?.range ?? 0)
-  return item.range >= Math.max(...ranges) ? 'cell-warn' : ''
-}
-function scaledNames(names: string[]) {
-  const temps = names.filter((name) => name.startsWith('Temp_'))
-  return temps.length ? temps : names
-}
-function detailTip(name: string) {
-  const heads = compareHeads.value
-  if (heads.length < 2) return name
-  const lines = [name]
-  for (const head of heads) {
-    const item = sliceItem(head.slice, name)
-    if (!item) {
-      lines.push(`${head.label} ${head.name} 没有这项`)
-      continue
-    }
-    lines.push(`${head.label} ${head.name} ${item.n} 片 均值 ${meas(name, item.mean)} 最小 ${meas(name, item.minimum)} 最大 ${meas(name, item.maximum)} 上限 ${meas(name, item.high)} 下限 ${meas(name, item.low)} 超上限 ${item.high_fail} 片 超下限 ${item.low_fail} 片`)
-  }
-  return lines.join('<br/>')
-}
 function unitOf(name: string) {
   if (name === 'power_w' || name === '功率') return 'W'
   if (name.includes('Rc')) return '℃/W'
@@ -996,9 +1068,6 @@ const compareOpt = computed(() => {
       </div>
 
       <Panel v-if="list.length" title="AI 总结" code="8.2" :icon="Sparkles">
-        <template #actions>
-          <button type="button" class="btn btn-sm" :disabled="summaryBusy" @click="loadSummary">{{ summaryBusy ? '正在写…' : '生成总结' }}</button>
-        </template>
         <div class="row batch-switch">
           <div class="seg">
             <button type="button" :aria-pressed="analysisTarget === 'product'" @click="analysisTarget = 'product'">产品</button>
@@ -1008,11 +1077,30 @@ const compareOpt = computed(() => {
             <span v-for="head in compareHeads" :key="head.name" class="legend-bit"><i :style="{ background: head.color }"></i>{{ head.label }} {{ head.name }} · {{ head.n < 30 ? '不足片' : `${head.n} 片` }}</span>
           </p>
         </div>
-        <p v-if="summaryError" class="t-danger">{{ summaryError }}</p>
-        <ol v-else-if="summaryLines.length" class="sum">
-          <li v-for="(line, index) in summaryLines" :key="index">{{ line }}</li>
-        </ol>
-        <p v-else class="muted">总结只用下面这套词：片、不合格、均值、极差、最大值、最小值、上限、下限、超上限、超下限、偏上限、偏下限、上限裕量、下限裕量。温度带 ℃，功率带 W。</p>
+        <button v-if="censusTables.length" type="button" class="btn btn-sm census-toggle" :class="{ 'btn-primary': censusOpen }" :aria-expanded="censusOpen" @click="censusOpen = !censusOpen">{{ censusOpen ? '收起' : '展开' }}机台槽位片数和良率</button>
+        <template v-if="censusOpen">
+        <div v-for="table in censusTables" :key="table.batch" class="table-wrap census-table">
+          <table class="table">
+            <thead>
+              <tr><th>机台</th><th>槽位</th><th class="r">片数</th><th class="r">良率</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>{{ table.machines }}</td>
+                <td>整批</td>
+                <td class="r num">{{ table.tested }}</td>
+                <td class="r num">{{ table.yield }}</td>
+              </tr>
+              <tr v-for="slot in table.slots" :key="slot.slot">
+                <td>{{ slot.machine }}</td>
+                <td class="mono">{{ slot.index }}</td>
+                <td class="r num">{{ slot.tested }}</td>
+                <td class="r num">{{ slot.yield }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        </template>
         <div v-if="limitFailOpt || limitMeanOpt" class="grid g-2 chart-row">
           <div v-if="limitFailOpt">
             <p class="fs-sm fw-6">超上限、超下限</p>
@@ -1030,85 +1118,115 @@ const compareOpt = computed(() => {
           <p class="fs-xs muted">柱底是最小值，柱顶是最大值，高度是极差。</p>
           <EChart :ref="(el) => takeChart('split', el)" :option="splitOpt" :height="300" />
         </div>
-        <p v-if="summaryModel" class="fs-xs muted">{{ summaryModel }}</p>
       </Panel>
 
       <Panel v-if="analysis" title="卡限项分析" code="LIMITS" :icon="BarChart3">
         <p class="fs-xs muted">有效 {{ analysis.tested }} 片 · 中止 {{ analysis.aborted }} · 未保留 {{ analysis.discarded }} · 无效读数 {{ analysis.invalid }}</p>
         <p v-if="analysis.note" class="muted">{{ analysis.note }}</p>
-        <div v-else class="table-wrap">
+        <div v-else>
+          <div class="legend-block">
+            <p class="fs-sm legend-row">
+              <span v-for="head in compareHeads" :key="head.name" class="legend-bit"><i :style="{ background: head.color }"></i>{{ head.label }} {{ head.name }} · {{ head.n < 30 ? '不足片' : `${head.n} 片` }}</span>
+            </p>
+            <button v-if="hiddenCount" type="button" class="btn btn-sm" :class="{ 'btn-primary': showQuiet }" @click="showQuiet = !showQuiet">{{ showQuiet ? '收起持平项' : `展开其余 ${hiddenCount} 项，限内且持平` }}</button>
+            <p class="fs-xs legend-note"><span class="t-danger">红字</span> 超限片数大于 0 · <span class="cell-warn">浅黄底</span> 上限裕量小于 0.3℃，或两批都不是不足片且极差差到 2 倍 · <span class="muted">灰字</span> 不足片</p>
+          </div>
+          <div class="table-wrap">
           <table class="table">
             <thead>
-              <tr><th>项</th><th class="r">片数</th><th class="r">均值</th><th class="r">最小值</th><th class="r">最大值</th><th class="r">极差</th><th class="r">重复性</th><th class="r">超上限</th><th class="r">超下限</th><th>偏移</th><th class="r">上限裕量</th><th class="r">下限裕量</th><th>时间顺序</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="item in analysis.overall.items" :key="item.item">
-                <td class="mono fs-xs">{{ item.item }}</td>
-                <td class="r num">{{ item.n }}</td>
-                <td class="r num">{{ meas(item.item, item.mean) }}</td>
-                <td class="r num">{{ meas(item.item, item.minimum) }}</td>
-                <td class="r num">{{ meas(item.item, item.maximum) }}</td>
-                <td class="r num">{{ meas(item.item, item.range) }}</td>
-                <td class="r num">{{ meas(item.item, item.repeat_std) }}<span v-if="item.retest_serials" class="fs-xs muted"> 复测极差 {{ meas(item.item, item.retest_range) }}</span></td>
-                <td class="r num">{{ item.high_fail }}</td>
-                <td class="r num">{{ item.low_fail }}</td>
-                <td>{{ item.offset }}</td>
-                <td class="r num">{{ meas(item.item, item.margin_high) }}</td>
-                <td class="r num">{{ meas(item.item, item.margin_low) }}</td>
-                <td>{{ item.trend }}</td>
+              <tr v-if="compareHeads.length > 1">
+                <th>项</th>
+                <th class="r">下限</th>
+                <th class="r">上限</th>
+                <template v-for="head in compareHeads" :key="head.label">
+                  <th class="r">{{ head.label }}片数</th>
+                  <th class="r">{{ head.label }}均值</th>
+                  <th class="r">{{ head.label }}极差</th>
+                  <th class="r">{{ head.label }}超上限</th>
+                  <th class="r">{{ head.label }}上限裕量</th>
+                  <th>{{ head.label }}时间顺序</th>
+                </template>
               </tr>
-              <tr v-if="!analysis.overall.items.length"><td colspan="13" class="c muted">方案里没有可分析的上下限</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-if="acrossSlices.length > 1" class="table-wrap batch-sum">
-          <p class="fs-sm fw-6">相关性 · 同一项在{{ acrossLabel }}</p>
-          <table class="table">
-            <thead>
-              <tr><th>项</th><th>分组</th><th class="r">片数</th><th class="r">均值</th><th class="r">最小值</th><th class="r">最大值</th><th class="r">极差</th><th class="r">超上限</th><th class="r">超下限</th></tr>
+              <tr v-else><th>项</th><th class="r">下限</th><th class="r">上限</th><th class="r">片数</th><th class="r">均值</th><th class="r">最小值</th><th class="r">最大值</th><th class="r">极差</th><th class="r">重复性</th><th class="r">超上限</th><th class="r">超下限</th><th>偏移</th><th class="r">上限裕量</th><th class="r">下限裕量</th><th>时间顺序</th></tr>
             </thead>
             <tbody>
-              <template v-for="name in orderedItemNames" :key="name">
-                <tr v-for="slice in acrossSlices" :key="name + slice.name">
-                  <td class="mono fs-xs">{{ name }}</td>
-                  <td class="mono fs-xs">{{ slice.name }}</td>
-                  <td class="r num">{{ sliceItem(slice, name)?.n ?? 0 }}</td>
-                  <td class="r num">{{ meas(name, sliceItem(slice, name)?.mean) }}</td>
-                  <td class="r num">{{ meas(name, sliceItem(slice, name)?.minimum) }}</td>
-                  <td class="r num">{{ meas(name, sliceItem(slice, name)?.maximum) }}</td>
-                  <td class="r num">{{ meas(name, sliceItem(slice, name)?.range) }}</td>
-                  <td class="r num">{{ sliceItem(slice, name)?.high_fail ?? 0 }}</td>
-                  <td class="r num">{{ sliceItem(slice, name)?.low_fail ?? 0 }}</td>
-                </tr>
-              </template>
+              <tr v-for="name in visibleItemNames" :key="name">
+                <td class="mono fs-xs">{{ name }}</td>
+                <td class="r num">{{ limitCell(name, 'low') }}</td>
+                <td class="r num">{{ limitCell(name, 'high') }}</td>
+                <template v-if="compareHeads.length > 1">
+                  <template v-for="head in compareHeads" :key="head.label">
+                    <td class="r num" :class="countClass(sliceItem(head.slice, name)?.n)">{{ sliceItem(head.slice, name)?.n ?? 0 }}</td>
+                    <td class="r num">{{ meas(name, sliceItem(head.slice, name)?.mean) }}</td>
+                    <td class="r num" :class="rangeClass(name, sliceItem(head.slice, name))">{{ meas(name, sliceItem(head.slice, name)?.range) }}</td>
+                    <td class="r num" :class="failClass(sliceItem(head.slice, name)?.high_fail)">{{ sliceItem(head.slice, name)?.high_fail ?? 0 }}</td>
+                    <td class="r num" :class="marginClass(sliceItem(head.slice, name)?.margin_high)">{{ meas(name, sliceItem(head.slice, name)?.margin_high) }}</td>
+                    <td>{{ sliceItem(head.slice, name)?.trend || '—' }}</td>
+                  </template>
+                </template>
+                <template v-else>
+                  <td class="r num" :class="countClass(overallItem(name)?.n)">{{ overallItem(name)?.n ?? 0 }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.mean) }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.minimum) }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.maximum) }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.range) }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.repeat_std) }}<span v-if="overallItem(name)?.retest_serials" class="fs-xs muted"> 复测极差 {{ meas(name, overallItem(name)?.retest_range) }}</span></td>
+                  <td class="r num" :class="failClass(overallItem(name)?.high_fail)">{{ overallItem(name)?.high_fail ?? 0 }}</td>
+                  <td class="r num" :class="failClass(overallItem(name)?.low_fail)">{{ overallItem(name)?.low_fail ?? 0 }}</td>
+                  <td>{{ overallItem(name)?.offset }}</td>
+                  <td class="r num" :class="marginClass(overallItem(name)?.margin_high)">{{ meas(name, overallItem(name)?.margin_high) }}</td>
+                  <td class="r num">{{ meas(name, overallItem(name)?.margin_low) }}</td>
+                  <td>{{ overallItem(name)?.trend }}</td>
+                </template>
+              </tr>
+              <tr v-if="!analysis.overall.items.length"><td :colspan="compareHeads.length > 1 ? 3 + compareHeads.length * 6 : 15" class="c muted">方案里没有可分析的上下限</td></tr>
             </tbody>
           </table>
+          </div>
         </div>
-        <section v-if="analysis.fail_rank.length" class="batch-sum">
-          <p class="fs-sm fw-6">不合格项</p>
-          <p class="fs-sm">{{ failText }}</p>
-        </section>
-        <section v-for="slice in shownSlices" :key="slice.name" class="batch-sum">
-          <p class="mono fs-sm fw-6">{{ slice.name }} <span class="muted">中止 {{ slice.aborted }} · 未保留 {{ slice.discarded }}</span></p>
-          <p v-for="item in slice.items.filter((row) => row.high_fail || row.low_fail || slice.items.length <= 6)" :key="item.item" class="fs-sm">{{ item.item }} 均值 {{ meas(item.item, item.mean) }}，极差 {{ meas(item.item, item.range) }}，超上限 {{ item.high_fail }} 片，超下限 {{ item.low_fail }} 片，{{ item.offset }}</p>
-        </section>
-        <section v-if="analysisTarget === 'machine' && analysis.slots.length" class="batch-sum">
-          <p class="fs-sm fw-6">槽位</p>
-          <p v-for="slice in analysis.slots" :key="slice.name" class="fs-sm">{{ slice.name }}：{{ slice.items.map((item) => `${item.item} 均值 ${meas(item.item, item.mean)} 极差 ${meas(item.item, item.range)}`).join('；') }}</p>
-        </section>
-        <section v-if="analysis.process.length" class="batch-sum">
-          <p class="fs-sm fw-6">过程</p>
-          <p v-for="note in analysis.process" :key="note.serial_number + note.item" class="fs-sm">{{ note.serial_number }} 的 {{ note.item }}：{{ note.shape }}</p>
-        </section>
+        <div v-if="compareHeads.length > 1" class="batch-sum">
+          <div class="row-between">
+            <p class="fs-sm fw-6">相关性 · 同一项在{{ acrossLabel }}</p>
+            <button v-if="hiddenCount" type="button" class="btn btn-sm" :class="{ 'btn-primary': showQuiet }" @click="showQuiet = !showQuiet">{{ showQuiet ? '收起持平项' : `展开其余 ${hiddenCount} 项，限内且持平` }}</button>
+          </div>
+          <div class="table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>项</th>
+                <th v-for="head in compareHeads" :key="head.label">{{ head.label }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="name in visibleItemNames" :key="name">
+                <td class="mono fs-xs">{{ name }}</td>
+                <td v-for="head in compareHeads" :key="head.label" :class="failClass(sliceItem(head.slice, name)?.high_fail)">
+                  {{ meas(name, sliceItem(head.slice, name)?.mean) }} · {{ sliceItem(head.slice, name)?.n ?? 0 }} 片 · 超上限 {{ sliceItem(head.slice, name)?.high_fail ?? 0 }} · 极差 {{ meas(name, sliceItem(head.slice, name)?.range) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
       </Panel>
 
-      <Panel v-if="findings.length" title="结果" code="FROM RUNS">
-        <section v-for="section in findings" :key="section.batch_id" class="batch-sum">
-          <p v-if="findings.length > 1" class="mono fs-sm fw-6">{{ section.batch_id }}</p>
-          <ol class="sum">
-            <li v-for="(line, index) in section.lines" :key="index">{{ line }}</li>
-          </ol>
-        </section>
+      <Panel v-if="list.length" title="结果" code="ANALYSIS">
+        <div class="row">
+          <button type="button" class="btn btn-sm" :class="{ 'btn-primary': summaryMode === 'single' }" :disabled="summaryBusy" @click="loadSummary('single')">{{ summaryBusy && summaryMode === 'single' ? '正在分析…' : '单批次分析' }}</button>
+          <button type="button" class="btn btn-sm" :class="{ 'btn-primary': summaryMode === 'cross' }" :disabled="summaryBusy || list.length < 2" @click="loadSummary('cross')">{{ summaryBusy && summaryMode === 'cross' ? '正在分析…' : '跨批次分析' }}</button>
+          <button v-if="summaryLines.length" type="button" class="btn btn-sm" :class="{ 'btn-primary': summaryOpen }" :aria-expanded="summaryOpen" @click="summaryOpen = !summaryOpen">{{ summaryOpen ? '收起' : '展开' }}</button>
+        </div>
+        <p v-if="list.length < 2" class="fs-xs muted">只导入了一批，跨批次分析不可用。</p>
+        <p v-if="summaryError" class="t-danger">{{ summaryError }}</p>
+        <div v-else-if="summaryLines.length && summaryOpen" class="sum-text">
+          <p v-for="(line, index) in summaryLines" :key="index" :class="{ 'fw-6': summaryLead(line) === line, 'sum-gap': summaryBreak(line, index), 'sum-batch': index > 0 && line === '已暴露的卡限项' }">
+            <template v-if="summaryLead(line) && summaryLead(line) !== line"><span class="fw-6">{{ summaryLead(line) }}</span>{{ line.slice(summaryLead(line).length) }}</template>
+            <template v-else>{{ line }}</template>
+          </p>
+          <p v-if="summaryLooked" class="fs-xs muted">{{ summaryLooked }}</p>
+        </div>
+        <p v-else-if="!summaryLines.length" class="muted">选一种分析。结论分成已暴露的卡限项和潜在危险项。多批时点单批次分析，会按一批一段分开写。</p>
+        <p v-if="summaryModel" class="fs-xs muted">{{ summaryModel }}</p>
       </Panel>
 
       <Panel v-if="multi" title="批次对比" code="YIELD · RC" :icon="BarChart3">
@@ -1208,14 +1326,23 @@ const compareOpt = computed(() => {
 </template>
 
 <style scoped>
+.sum-text p { margin: 0 0 6px; line-height: 1.7; }
+.sum-text .sum-gap { margin-top: 14px; }
+.sum-text .sum-batch { margin-top: 28px; padding-top: 16px; border-top: var(--bw) solid var(--c-border); }
+.batch-switch { flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 8px; }
+.batch-key { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; }
+.census-toggle { margin-top: 8px; }
+.census-table { margin-top: 8px; }
+.legend-block { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin-bottom: 8px; }
+.legend-row { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; }
+.legend-note { width: 100%; margin: 0; }
+.legend-bit { display: inline-flex; align-items: center; gap: 6px; }
+.legend-bit i { width: 10px; height: 10px; display: inline-block; }
+.cell-warn { background: color-mix(in srgb, var(--c-warn) 22%, transparent); }
 .rh { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 4px; }
 .rh h1 { font-size: var(--fs-xl); font-family: var(--font-mono); margin: 2px 0; }
 .batch-sum + .batch-sum { margin-top: 14px; }
 .sum { margin: 4px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.7; }
-.batch-switch { flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 8px; }
-.batch-key { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; }
-.legend-bit { display: inline-flex; align-items: center; gap: 6px; }
-.legend-bit i { width: 10px; height: 10px; display: inline-block; }
 .chart-row { margin-top: 12px; }
 .preset-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .figure { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
