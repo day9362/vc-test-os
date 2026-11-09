@@ -60,6 +60,18 @@ async def ensure_figure_preset_column() -> None:
         await conn.execute(text(
             "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS preset VARCHAR(32) NOT NULL DEFAULT ''"
         ))
+        await conn.execute(text(
+            "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS thread JSON NOT NULL DEFAULT '[]'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS questions JSON NOT NULL DEFAULT '[]'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS ask_round INTEGER NOT NULL DEFAULT 0"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE report_figures ADD COLUMN IF NOT EXISTS note TEXT NOT NULL DEFAULT ''"
+        ))
 
 
 async def ensure_user_tenant_column() -> None:

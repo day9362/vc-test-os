@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, BarChart3, Bot, Download, Sparkles } from 'lucide-vue-next'
+import { ArrowLeft, BarChart3, Bot, Download, Loader2, Sparkles } from 'lucide-vue-next'
 import Kpi from '@/components/Kpi.vue'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
@@ -128,6 +128,15 @@ interface FigurePanel {
   title: string
   option: Record<string, unknown>
 }
+interface FigureQuestion {
+  text: string
+  options: string[]
+}
+interface FigureTable {
+  name: string
+  columns: string[]
+  rows: string[][]
+}
 interface FigureItem {
   figure_id: string
   status: string
@@ -139,6 +148,9 @@ interface FigureItem {
   code: string
   results: string[][]
   summary?: { scope: string; columns: string[]; rows: string[][]; notes: string[] } | null
+  table?: FigureTable | null
+  questions?: FigureQuestion[]
+  note?: string
   error: string | null
   step: string
 }
@@ -155,6 +167,10 @@ const figurePrompt = ref('')
 const figureBusy = ref(false)
 const figureError = ref('')
 const pngUrls = ref<Record<string, string>>({})
+const figureOpen = ref<Record<string, boolean>>({})
+const tableOpen = ref<Record<string, boolean>>({})
+const replyText = ref<Record<string, string>>({})
+const replyPicks = ref<Record<string, string[]>>({})
 
 async function load() {
   if (!asked.value.length) {
@@ -442,7 +458,10 @@ async function createFigure(preset = '') {
     })
     createdId = created.figure_id
     if (!kind) figurePrompt.value = ''
+    const previous = figures.value[0]?.figure_id
     await loadFigures()
+    figureOpen.value = { ...figureOpen.value, [created.figure_id]: true }
+    if (previous && previous !== created.figure_id) figureOpen.value = { ...figureOpen.value, [previous]: false }
   } catch (err) {
     figureError.value = err instanceof Error ? err.message : '分析没有开始'
     return
@@ -496,6 +515,127 @@ async function attachPng(item: FigureItem) {
   if (item.echarts_option || !item.png_url || pngUrls.value[item.figure_id]) return
   const blob = await apiBlob(`/reports/figures/${item.figure_id}.png`)
   pngUrls.value[item.figure_id] = URL.createObjectURL(blob)
+}
+
+async function sendReply(item: FigureItem) {
+  const text = (replyText.value[item.figure_id] || '').trim()
+  const picks = replyPicks.value[item.figure_id] || []
+  if ((!text && !picks.length) || figureBusy.value) return
+  const savedStatus = item.status
+  const savedQuestions = item.questions
+  const savedNote = item.note
+  const savedStep = item.step
+  item.status = 'running'
+  item.step = '正在根据补充计算'
+  item.questions = []
+  item.note = ''
+  figureBusy.value = true
+  figureError.value = ''
+  try {
+    await api(`/reports/figures/${item.figure_id}/reply`, {
+      method: 'POST',
+      body: JSON.stringify({ text, picks }),
+    })
+    replyText.value = { ...replyText.value, [item.figure_id]: '' }
+    replyPicks.value = { ...replyPicks.value, [item.figure_id]: [] }
+  } catch (err) {
+    item.status = savedStatus
+    item.questions = savedQuestions
+    item.note = savedNote
+    item.step = savedStep
+    figureError.value = err instanceof Error ? err.message : '补充没有送出'
+    return
+  } finally {
+    figureBusy.value = false
+  }
+  await followFigure(item.figure_id)
+}
+
+async function sendNext(item: FigureItem) {
+  const text = (replyText.value[item.figure_id] || '').trim()
+  if (!text || figureBusy.value) return
+  replyText.value = { ...replyText.value, [item.figure_id]: '' }
+  figurePrompt.value = text
+  await createFigure()
+}
+
+function togglePick(id: string, option: string) {
+  const current = replyPicks.value[id] || []
+  const next = current.includes(option) ? current.filter((item) => item !== option) : [...current, option]
+  replyPicks.value = { ...replyPicks.value, [id]: next }
+}
+
+function figureIsOpen(id: string, index: number) {
+  if (id in figureOpen.value) return figureOpen.value[id]
+  return index === 0
+}
+
+function toggleFigure(id: string, index: number) {
+  figureOpen.value = { ...figureOpen.value, [id]: !figureIsOpen(id, index) }
+}
+
+function axisLabels(axis: any): string[] {
+  const one = Array.isArray(axis) ? axis[0] : axis
+  return Array.isArray(one?.data) ? one.data.map((item: unknown) => String(item)) : []
+}
+
+function inferredScope(option: any): string {
+  const saved = option?.tip?.scope
+  if (saved) return String(saved)
+  const series = Array.isArray(option?.series) ? option.series : []
+  if (series.some((item: any) => item?.type === 'heatmap')) return '分机台槽'
+  const labels = [...axisLabels(option?.xAxis), ...axisLabels(option?.yAxis)]
+  if (labels.some((label) => /M\d+/i.test(label) && /槽\d+/.test(label))) return '分机台槽'
+  if (labels.some((label) => /^第\d+片$/.test(label))) return '整批'
+  if (labels.some((label) => /^Temp_/i.test(label))) return '整批'
+  const xName = String((Array.isArray(option?.xAxis) ? option.xAxis[0] : option?.xAxis)?.name || '')
+  if (xName === '批次') return '分批次'
+  if (xName === '机台') return '分机台'
+  if (xName === '槽位') return '分机台槽'
+  return ''
+}
+
+function withScope(title: string, scope: string) {
+  if (!title) return scope
+  if (!scope || title.includes(scope)) return title
+  if (scope === '分机台槽' && title.includes('机台') && title.includes('槽')) return title
+  return `${title} · ${scope}`
+}
+
+function figureTitle(item: FigureItem) {
+  return withScope(item.title || item.prompt, inferredScope(item.panels?.[0]?.option || item.echarts_option))
+}
+
+function panelTitle(panel: FigurePanel) {
+  return withScope(panel.title, inferredScope(panel.option))
+}
+
+function replyGuide(item: FigureItem) {
+  if (item.note.includes('至少还要')) return item.note
+  const questions = item.questions || []
+  const asked = questions.map((question) => question.text.replace(/[？?]$/, '')).join('；')
+  const blob = `${asked} ${item.note}`
+  const allow = [
+    ['图的类型', /类型|柱状|散点|箱线|折线|热力|纺锤|超限/],
+    ['横轴', /横轴|横坐标/],
+    ['纵轴', /纵轴|纵坐标/],
+    ['均值、最小值、最大值、极差', /均值|最小值|最大值|极差/],
+  ].filter(([, pattern]) => !pattern.test(blob)).map(([label]) => label)
+  const need = asked || item.note || '画出这张图还缺的信息'
+  return allow.length ? `至少还要：${need}。可以自己规定：${allow.join('、')}` : `至少还要：${need}`
+}
+
+function figureStatus(item: FigureItem) {
+  if (item.status === 'asking') return '追问中'
+  if (item.status === 'done') return '已出图'
+  if (item.status === 'failed') return item.error || '出图失败'
+  return item.step || '正在分析'
+}
+
+function dataTable(item: FigureItem): FigureTable | null {
+  if (item.table?.columns.length) return item.table
+  if (item.summary?.rows.length) return { name: `${item.prompt}所用数据`, columns: item.summary.columns, rows: item.summary.rows }
+  return null
 }
 
 async function removeFigure(id: string) {
@@ -652,16 +792,17 @@ function pageBlocks() {
   if (figures.value.length) {
     blocks.push({ kind: 'h2', text: 'AI 补充分析' })
     for (const item of figures.value) {
-      blocks.push({ kind: 'h2', text: item.title || item.prompt })
+      blocks.push({ kind: 'h2', text: figureTitle(item) })
       if (item.status === 'running') blocks.push({ kind: 'text', text: item.step || '正在分析' })
       if (item.error) blocks.push({ kind: 'text', text: item.error })
-      if (item.panels?.length) item.panels.forEach((panel, index) => add(shot(`fig-${item.figure_id}-${index}`, panel.title || item.title || '补充分析')))
+      if (item.panels?.length) item.panels.forEach((panel, index) => add(shot(`fig-${item.figure_id}-${index}`, panelTitle(panel) || figureTitle(item))))
       else if (item.echarts_option) add(shot(`fig-${item.figure_id}`, item.title || '补充分析'))
+      const table = dataTable(item)
+      if (table) blocks.push({ kind: 'table', title: table.name, columns: table.columns, rows: table.rows })
       if (item.summary) {
         blocks.push({ kind: 'text', text: item.summary.scope })
-        if (item.summary.rows.length) blocks.push({ kind: 'table', columns: item.summary.columns, rows: item.summary.rows })
         item.summary.notes.forEach((note) => blocks.push({ kind: 'text', text: note }))
-      } else item.results.forEach((pair) => blocks.push({ kind: 'text', text: `${pair[0]}：${pair[1]}` }))
+      } else if (!table) item.results.forEach((pair) => blocks.push({ kind: 'text', text: `${pair[0]}：${pair[1]}` }))
     }
   }
   return blocks.slice(0, 120)
@@ -1285,40 +1426,67 @@ const compareOpt = computed(() => {
         </div>
         <p v-if="figureError" class="t-danger">{{ figureError }}</p>
         <p v-else-if="!figures.length" class="muted">点一个分析，或写一句要求。图会用这些批次的测试记录算出来，加在这份报告上。</p>
-        <article v-for="item in figures" :key="item.figure_id" class="figure">
+        <article v-for="(item, index) in figures" :key="item.figure_id" class="figure">
           <div class="row-between">
-            <b>{{ item.title || item.prompt }}</b>
+            <button type="button" class="btn btn-sm" :class="{ 'btn-primary': figureIsOpen(item.figure_id, index) }" :aria-expanded="figureIsOpen(item.figure_id, index)" @click="toggleFigure(item.figure_id, index)">{{ figureIsOpen(item.figure_id, index) ? '收起' : '展开' }}</button>
+            <b>{{ figureTitle(item) }}</b>
+            <span class="fs-sm muted figure-status"><Loader2 v-if="item.status === 'running'" :size="14" class="spin" />{{ figureStatus(item) }}</span>
             <button type="button" class="btn btn-ghost btn-sm" @click="removeFigure(item.figure_id)">移除</button>
           </div>
-          <p v-if="item.status === 'running'" class="fs-sm muted">{{ item.step || '正在分析' }}</p>
-          <p v-else-if="item.error" class="t-danger">{{ item.error }}</p>
-          <div v-if="item.panels?.length" class="figure-grid" :class="{ stack: stackPanels(item.panels) }">
-            <section v-for="(panel, index) in item.panels" :key="index">
-              <p v-if="panel.title" class="fs-sm muted">{{ panel.title }}</p>
-              <EChart :ref="(el) => takeChart(`fig-${item.figure_id}-${index}`, el)" :option="panel.option" :height="panelHeight(panel)" />
-            </section>
-          </div>
-          <EChart v-else-if="item.echarts_option" :ref="(el) => takeChart(`fig-${item.figure_id}`, el)" :option="item.echarts_option" :height="240" />
-          <img v-else-if="pngUrls[item.figure_id]" :src="pngUrls[item.figure_id]" alt="" class="png" />
-          <p v-if="item.summary" class="fs-sm">{{ item.summary.scope }}</p>
-          <div v-if="item.summary?.rows.length" class="table-wrap">
-            <table class="table">
-              <thead>
-                <tr><th v-for="column in item.summary.columns" :key="column">{{ column }}</th></tr>
-              </thead>
+          <div v-show="figureIsOpen(item.figure_id, index)">
+            <p v-if="item.status === 'running'" class="fs-sm muted figure-status"><Loader2 :size="14" class="spin" />{{ item.step || '正在分析' }}</p>
+            <p v-else-if="item.error" class="t-danger">{{ item.error }}</p>
+            <div v-if="item.status === 'asking'" class="ask">
+              <p v-if="item.note" class="fs-sm">{{ item.note }}</p>
+              <section v-for="(question, questionIndex) in item.questions || []" :key="questionIndex">
+                <p class="fs-sm">{{ question.text }}</p>
+                <div class="preset-row">
+                  <button v-for="option in question.options" :key="option" type="button" class="btn btn-sm" :class="{ 'btn-primary': (replyPicks[item.figure_id] || []).includes(option) }" @click="togglePick(item.figure_id, option)">{{ option }}</button>
+                </div>
+              </section>
+              <div class="row">
+                <input v-model="replyText[item.figure_id]" class="input grow" :placeholder="replyGuide(item)" :title="replyGuide(item)" :disabled="figureBusy" @keydown.enter="sendReply(item)" />
+                <button type="button" class="btn btn-sm" :disabled="figureBusy" @click="sendReply(item)">发送</button>
+              </div>
+              <p class="fs-sm muted">{{ replyGuide(item) }}</p>
+            </div>
+            <div v-else-if="item.status === 'done'" class="ask">
+              <div class="row">
+                <input v-model="replyText[item.figure_id]" class="input grow" placeholder="在这张图的基础上再出一张" :disabled="figureBusy" @keydown.enter="sendNext(item)" />
+                <button type="button" class="btn btn-sm" :disabled="figureBusy || !(replyText[item.figure_id] || '').trim()" @click="sendNext(item)">发送</button>
+              </div>
+            </div>
+            <div v-if="item.panels?.length" class="figure-grid" :class="{ stack: stackPanels(item.panels) }">
+              <section v-for="(panel, panelIndex) in item.panels" :key="panelIndex">
+                <p v-if="panelTitle(panel)" class="fs-sm muted">{{ panelTitle(panel) }}</p>
+                <EChart :ref="(el) => takeChart(`fig-${item.figure_id}-${panelIndex}`, el)" :option="panel.option" :height="panelHeight(panel)" />
+              </section>
+            </div>
+            <EChart v-else-if="item.echarts_option" :ref="(el) => takeChart(`fig-${item.figure_id}`, el)" :option="item.echarts_option" :height="panelHeight({ title: '', option: item.echarts_option })" />
+            <img v-else-if="pngUrls[item.figure_id]" :src="pngUrls[item.figure_id]" alt="" class="png" />
+            <p v-if="item.summary" class="fs-sm">{{ item.summary.scope }}</p>
+            <template v-if="dataTable(item)">
+              <button type="button" class="btn btn-sm" :class="{ 'btn-primary': tableOpen[item.figure_id] }" :aria-expanded="!!tableOpen[item.figure_id]" @click="tableOpen[item.figure_id] = !tableOpen[item.figure_id]">{{ tableOpen[item.figure_id] ? '收起' : '展开' }}{{ dataTable(item)?.name }}</button>
+              <div v-if="tableOpen[item.figure_id]" class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr><th v-for="column in dataTable(item)?.columns" :key="column">{{ column }}</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, rowIndex) in dataTable(item)?.rows" :key="rowIndex">
+                      <td v-for="(cell, cellIndex) in row" :key="cellIndex" :class="cellIndex ? 'r num' : 'mono fs-xs'">{{ cell }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <p v-for="note in item.summary?.notes || []" :key="note" class="fs-sm muted">{{ note }}</p>
+            <table v-if="!dataTable(item) && item.results.length" class="table">
               <tbody>
-                <tr v-for="(row, index) in item.summary.rows" :key="index">
-                  <td v-for="(cell, cellIndex) in row" :key="cellIndex" :class="cellIndex ? 'r num' : 'mono fs-xs'">{{ cell }}</td>
-                </tr>
+                <tr v-for="(pair, pairIndex) in item.results" :key="pairIndex"><td>{{ pair[0] }}</td><td class="num">{{ pair[1] }}</td></tr>
               </tbody>
             </table>
           </div>
-          <p v-for="note in item.summary?.notes || []" :key="note" class="fs-sm muted">{{ note }}</p>
-          <table v-if="!item.summary && item.results.length" class="table">
-            <tbody>
-              <tr v-for="(pair, index) in item.results" :key="index"><td>{{ pair[0] }}</td><td class="num">{{ pair[1] }}</td></tr>
-            </tbody>
-          </table>
         </article>
       </Panel>
     </template>
@@ -1348,7 +1516,11 @@ const compareOpt = computed(() => {
 .figure { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .figure-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .figure-grid.stack { grid-template-columns: 1fr; }
-.png { width: 100%; max-height: 280px; object-fit: contain; }
+.png { width: 100%; max-height: 640px; object-fit: contain; }
+.ask { display: flex; flex-direction: column; gap: 8px; }
+.figure-status { display: inline-flex; align-items: center; gap: 6px; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 800px) {
   .figure-grid { grid-template-columns: 1fr; }
 }
