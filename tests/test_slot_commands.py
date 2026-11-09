@@ -11,7 +11,7 @@ USER = SimpleNamespace(user_id="u-1")
 
 
 def _machine(**extra) -> SimpleNamespace:
-    values = dict(machine_id="M01", status="READY", comm_status="OK", plan_id="PLAN-1", plan_version=2, last_sync_at=0)
+    values = dict(machine_id="M01", status="READY", comm_status="OK", plan_id="PLAN-1", plan_version=2, last_sync_at=0, slot_count=4)
     values.update(extra)
     return SimpleNamespace(**values)
 
@@ -42,6 +42,7 @@ class SlotCommandTests(unittest.IsolatedAsyncioTestCase):
             out = await service.load("M01", 1, " SN-1 ", USER, None)
         cluster.assert_awaited_once_with("/machines/M01/slots/1/load", {"serial_number": "SN-1"})
         self.assertEqual(slot.serial_number, "SN-1")
+        self.assertEqual(slot.phase, "LOADED")
         self.assertEqual(out.serial_number, "SN-1")
 
     async def test_load_rejects_busy_slot(self) -> None:
@@ -62,6 +63,16 @@ class SlotCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slot.phase, "SAMPLING")
         run = service.added[0]
         self.assertEqual((run.run_id, run.status, run.plan_id, run.serial_number), ("R-9", "RUNNING", "PLAN-1", "SN-1"))
+
+    async def test_start_without_run_id_does_not_invent_one(self) -> None:
+        slot = _slot(serial_number="SN-1", phase="LOADED")
+        service = _service(_machine(), slot)
+        with patch("app.service.machines.slot_service.post_cluster", AsyncMock(return_value={})):
+            with self.assertRaises(AppError) as caught:
+                await service.start("M01", 1, USER, None)
+        self.assertEqual(caught.exception.status, 502)
+        self.assertEqual(service.added, [])
+        self.assertNotEqual(slot.phase, "SAMPLING")
 
     async def test_start_needs_loaded_board(self) -> None:
         service = _service(_machine(), _slot())

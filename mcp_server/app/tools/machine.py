@@ -101,7 +101,7 @@ async def vc_machine(
     - slot_load / slot_start / slot_test / slot_abort / slot_clear_error：单槽，slot_index 从 1 开始。slot_load 和 slot_test 要 serial_number。
     - dispatch：上方案。把已发布的 plan_id 和 version 装到 machine_ids，不开始测试。
     - production_precheck：只检查，参数同 production_start。
-    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一。可给 auto_recover、max_count。auto_recover 不填表示故障时停住。
+    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一。可给 auto_recover、max_count。auto_recover 不填表示故障后自动恢复。
     - production_stop：停止连续生产。不给 batch_id 时停止当前生产。
     - sim_speed：改仿真倍率，必须给 machine_ids 和 speed。
     - sim_scenario / sim_fault：只在用户明确要求时用，先查 sim_catalog。sim_scenario 要 machine_id 和 name。sim_fault 要 machine_id 和 kind，可给 slot_index。

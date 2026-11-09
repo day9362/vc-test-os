@@ -31,7 +31,7 @@ from app.service.settings.defaults import JOB_KEYS, min_interval
 from app.service.settings.mapping import looks_masked, mask_secret, merge_secrets, settings_entity, settings_out
 from app.service.settings.model import apply_shared_model
 from app.service.settings.sim import FAULT_CATALOG, SCENARIOS
-from app.service.settings.cluster_policy import RETRIES_MAX, TIMEOUT_MAX, TIMEOUT_MIN, apply_cluster_policy, request_timeout, sync_send
+from app.service.settings.cluster_policy import RETRIES_MAX, TIMEOUT_MAX, TIMEOUT_MIN, apply_cluster_policy, apply_endpoint, request_timeout, sync_send
 from app.tasks.job_runs import snapshot
 from app.tasks.scheduler import apply_job_intervals
 
@@ -68,6 +68,7 @@ class SettingsService:
         await self.settings.session.commit()
         apply_job_intervals(row.payload or {})
         apply_cluster_policy(row.payload or {})
+        apply_endpoint(row.payload or {})
         return settings_out(settings_entity(row.payload or {}, row.updated_at))
 
     async def test_connection(self, body: TestConnectionIn) -> TestConnectionOut:

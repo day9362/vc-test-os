@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Agg5m, Alarm, BatchStat, Machine, Run, Slot } from '@/api/types'
-import { api, clearSession, wsUrl } from '@/api/http'
+import { api, clearSession, idempotencyKey, wsUrl } from '@/api/http'
 
 const TOPICS = ['fleet', 'slots', 'runs', 'alarms', 'agg_5m', 'batches', 'production']
 
@@ -267,7 +267,7 @@ export const useLiveStore = defineStore('live', () => {
     try {
       await api(`/alarms/${encodeURIComponent(id)}/ack`, {
         method: 'POST',
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey() },
       })
     } catch {
       if (row) row.acked = false
@@ -280,7 +280,7 @@ export const useLiveStore = defineStore('live', () => {
     try {
       await api('/alarms/ack-all', {
         method: 'POST',
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey() },
       })
     } catch {
       alarms.value.forEach((item, index) => { item.acked = previous[index] })

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { api } from '@/api/http'
+import { api, idempotencyKey } from '@/api/http'
 import type { AiModule } from '@/api/types'
 import { AI_MODULES } from '@/mock/cluster'
 
@@ -83,7 +83,7 @@ export const useSettingsStore = defineStore('settings', () => {
     const body = await api<PlatformSettings>('/settings', {
       method: 'PUT',
       body: JSON.stringify(draft.value),
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
     })
     const next = normalize(body)
     saved.value = clone(next)

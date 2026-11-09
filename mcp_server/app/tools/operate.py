@@ -78,7 +78,7 @@ async def run_operate(
     生产：
     - create_batch：生成一批待测板，要 model。片数用 count，或 count_random 配 count_min、count_max。良率用 yield_rate（0 到 1，1 表示没有次品），或 yield_random 配 yield_min、yield_max；也可以直接给 defect_ratio。序列号由平台分配。需批准。
     - production_precheck：只做下发前检查，参数同 production_start。直接执行。
-    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一，可给 auto_recover、max_count。auto_recover 不填表示故障时停住。会先自动预检。需批准。
+    - production_start：开始连续生产，要 machine_ids、plan_id、plan_version，batch_id 和 serial_numbers 二选一，可给 auto_recover、max_count。auto_recover 不填表示故障后自动恢复。会先自动预检。需批准。
     - production_stop：停止连续生产；不给 batch_id 时停止当前生产。需批准。
     仿真（仅仿真数据源，只在用户明确要求时调用）：
     - sim_speed：改仿真倍率 speed，必须给出 machine_ids，不会改全部机台。只缩短等待，不改变温度曲线。需批准。
@@ -264,9 +264,10 @@ def _production_body(args: dict) -> dict | None:
         "plan_version": args.get("plan_version"),
         "batch_id": args.get("batch_id"),
         "serial_numbers": args.get("serial_numbers"),
-        "auto_recover": bool(args.get("auto_recover")),
         "max_count": args.get("max_count"),
     }
+    if args.get("auto_recover") is not None:
+        body["auto_recover"] = bool(args.get("auto_recover"))
     return {key: value for key, value in body.items() if value is not None}
 
 
@@ -302,7 +303,7 @@ async def _start_preview(c: Ctx, args: dict):
     if not checked.get("ok"):
         return checked
     source = f"批次 {args['batch_id']}" if args.get("batch_id") else f"{len(args['serial_numbers'])} 片指定的板"
-    recover = "故障后自动恢复并继续" if args.get("auto_recover") else "故障时停住，不自动恢复"
+    recover = "故障时停住，不自动恢复" if args.get("auto_recover") is False else "故障后自动恢复并继续"
     warns = [item.get("message", "") for item in (checked.get("data") or {}).get("issues") or [] if item.get("level") == "warn"]
     sentence = f"让 {join_ids(_targets(args))} 用方案 {args['plan_id']} v{args['plan_version']} 连续测试{source}，{recover}"
     return Preview(sentence, warns, precheck=checked.get("data"))

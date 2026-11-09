@@ -7,7 +7,7 @@ from app.models.dto.alarm import AckAllOut, AlarmActionOut, AlarmOut, AlarmPageO
 from app.models.entity.user import UserEntity
 from app.repo.alarm_repo import AlarmRepo
 from app.repo.audit_repo import AuditRepo
-from app.core.config import settings
+from app.service.settings.cluster_policy import cluster_base_url
 from app.service.overview.hub import hub
 from app.service.overview.mapping import alarm_entity, alarm_out, attribution_out
 from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
@@ -28,14 +28,14 @@ class AlarmService:
         if cursor and ":" not in cursor:
             raise AppError(400, "BAD_REQUEST", "cursor 格式不正确")
         fleet_ids = None
-        if settings.cluster_base_url and not machine_id:
+        if cluster_base_url() and not machine_id:
             fleet_ids = fleet_machine_ids() or await refresh_fleet() or None
         rows, next_cursor = await self.alarms.page(acked, machine_id, level, cursor, limit, fleet_ids)
         return AlarmPageOut(items=[alarm_out(alarm_entity(row)) for row in rows], next_cursor=next_cursor)
 
     async def get_alarm(self, alarm_id: str) -> AlarmOut:
         row = await self._require(alarm_id)
-        if settings.cluster_base_url and row.machine_id:
+        if cluster_base_url() and row.machine_id:
             fleet = fleet_machine_ids() or await refresh_fleet()
             if fleet and row.machine_id not in fleet:
                 raise AppError(404, "NOT_FOUND", f"告警 {alarm_id} 不存在")

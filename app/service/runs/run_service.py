@@ -8,7 +8,6 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.errors import AppError
 from app.models.dto.run import RunDetailOut, RunGroundTruthOut, RunPageOut, RunSamplesOut
@@ -17,7 +16,7 @@ from app.models.orm.test_plan import TestPlanOrm
 from app.repo.run_repo import RunRepo
 from app.repo.settings_repo import SettingsRepo
 from app.service.runs.cluster_ingest import _get, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
-from app.service.settings.cluster_policy import request_timeout, sync_send
+from app.service.settings.cluster_policy import cluster_base_url, cluster_token, request_timeout, sync_send
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
 from app.service.runs.result_csv import build_result_export, export_date, points_from_body, raw_filename, render_raw, unique_names
 
@@ -61,7 +60,7 @@ class RunService:
         passed_value, passed_is_null = self._parse_passed(passed)
         await self._ensure_fleet()
         self._schedule_ingest()
-        exclude_seed = bool(settings.cluster_base_url)
+        exclude_seed = bool(cluster_base_url())
         fleet_ids = fleet_machine_ids() or None
         rows, next_cursor = await self.runs.page(
             machine_id, batch_id, passed_value, passed_is_null, status, q, start, end, cursor, limit, exclude_seed, fleet_ids
@@ -120,7 +119,7 @@ class RunService:
         fleet = fleet_machine_ids()
         if row is not None and fleet and row.machine_id not in fleet:
             raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不在当前现场机台")
-        base = ((sim.get("base_url") or settings.cluster_base_url) or "").strip().rstrip("/")
+        base = ((sim.get("base_url") or cluster_base_url()) or "").strip().rstrip("/")
         if not base:
             raise AppError(404, "NOT_FOUND", "ground-truth 仅仿真且打开评估开关时可用")
         try:
@@ -142,13 +141,13 @@ class RunService:
         return RunGroundTruthOut.model_validate(body)
 
     async def _ensure_fleet(self) -> None:
-        if settings.cluster_base_url and not fleet_machine_ids():
+        if cluster_base_url() and not fleet_machine_ids():
             await refresh_fleet()
 
     def _schedule_ingest(self) -> None:
         """集群 /runs 可能很慢，不挡列表；后台补齐本地库。"""
         global _last_ingest
-        if not settings.cluster_base_url:
+        if not cluster_base_url():
             return
         now = monotonic()
         if now - _last_ingest < _INGEST_GAP_S:
@@ -165,7 +164,7 @@ class RunService:
             raise AppError(400, "BAD_REQUEST", "group 只能是 day 或 batch")
         await self._ensure_fleet()
         self._schedule_ingest()
-        rows = await self.runs.list_for_export(batch_id, start, end, bool(settings.cluster_base_url), fleet_machine_ids() or None)
+        rows = await self.runs.list_for_export(batch_id, start, end, bool(cluster_base_url()), fleet_machine_ids() or None)
         return build_result_export(rows, await self._batch_models(), await self._plan_durations(), group)
 
     async def export_products(self, run_ids: list[str]) -> tuple[bytes, str, str]:
@@ -204,7 +203,7 @@ class RunService:
                     raise AppError(404, "NOT_FOUND", f"测试记录 {run_id} 不存在")
                 rows.append(row)
         elif batch_id:
-            rows = await self.runs.list_for_export(batch_id, None, None, bool(settings.cluster_base_url), fleet or None)
+            rows = await self.runs.list_for_export(batch_id, None, None, bool(cluster_base_url()), fleet or None)
         if not rows:
             raise AppError(400, "BAD_REQUEST", "先选择要导出的测试记录")
         if len(rows) > 200:
@@ -224,7 +223,7 @@ class RunService:
         return buffer.getvalue(), "application/zip", f"rawdata_{export_date()}.zip"
 
     async def _raw_points(self, run_id: str) -> list[dict]:
-        if settings.cluster_base_url:
+        if cluster_base_url():
             try:
                 body = await asyncio.to_thread(_get, f"/runs/{run_id}/samples")
             except Exception:
@@ -255,7 +254,7 @@ class RunService:
         limits = limit_map([item.model_dump() for item in plan.plan.limits])
         columns = columns_for(limits)
         await self._ensure_fleet()
-        rows = await self.runs.list_for_export(batch_id, None, None, bool(settings.cluster_base_url), fleet_machine_ids() or None)
+        rows = await self.runs.list_for_export(batch_id, None, None, bool(cluster_base_url()), fleet_machine_ids() or None)
         counts = {item.batch_id: item.count for item in await ProductionRepo(self.session).batches()}
         data = []
         for row in rows:
@@ -295,5 +294,5 @@ async def _ingest_in_background() -> None:
 
 
 def _get_ground_truth(url: str) -> httpx.Response:
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = {"Authorization": f"Bearer {cluster_token()}"} if cluster_token() else {}
     return sync_send("GET", url, timeout=request_timeout(), headers=headers)

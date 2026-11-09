@@ -1,20 +1,15 @@
 import httpx
 
-from app.core.config import settings
 from app.core.errors import AppError
-from app.service.settings.cluster_policy import async_send, request_timeout
-
-DEFAULT_BASE = "https://cluster.simuoss.cn/api"
-
-
-def cluster_base() -> str:
-    return (settings.cluster_base_url or DEFAULT_BASE).rstrip("/")
+from app.service.settings.cluster_policy import async_send, cluster_base_url, cluster_headers, note_cluster_unavailable, request_timeout
 
 
 async def cluster_json(method: str, path: str, body: dict | None = None) -> dict | list:
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    base = cluster_base_url()
+    if not base:
+        raise AppError(409, "CONFLICT", "没有配置集群地址")
     try:
-        response = await async_send(method, f"{cluster_base()}{path}", timeout=request_timeout(), headers=headers, json_body=body)
+        response = await async_send(method, f"{base}{path}", timeout=request_timeout(), headers=cluster_headers(), json_body=body)
     except httpx.TimeoutException as exc:
         raise AppError(504, "CLUSTER_TIMEOUT", "请求集群超时") from exc
     except httpx.HTTPError as exc:
@@ -23,6 +18,8 @@ async def cluster_json(method: str, path: str, body: dict | None = None) -> dict
         parsed = response.json()
     except Exception:
         parsed = None
+    if response.status_code == 503:
+        note_cluster_unavailable()
     if response.status_code >= 400:
         raise AppError(502, "CLUSTER_ERROR", "集群返回错误", {"upstream": parsed if parsed is not None else response.text[:500]})
     if isinstance(parsed, (dict, list)):

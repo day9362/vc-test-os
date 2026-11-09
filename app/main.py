@@ -15,7 +15,7 @@ from app.models.orm.base import Base
 from app.repo.settings_repo import SettingsRepo
 from app.seed import ensure_figure_preset_column, ensure_user_tenant_column, seed
 from app.service.reports.store import reports_dir
-from app.service.settings.cluster_policy import apply_cluster_policy
+from app.service.settings.cluster_policy import apply_cluster_policy, apply_endpoint
 from app.tasks.scheduler import apply_job_intervals, start_scheduler, stop_scheduler
 
 
@@ -26,12 +26,13 @@ async def lifespan(_: FastAPI):
     await ensure_user_tenant_column()
     await ensure_figure_preset_column()
     await seed()
-    start_scheduler()
     async with SessionLocal() as session:
         row = await SettingsRepo(session).get_or_create()
         await session.commit()
         apply_job_intervals(row.payload or {})
         apply_cluster_policy(row.payload or {})
+        apply_endpoint(row.payload or {})
+    start_scheduler()
     yield
     stop_scheduler()
     await close_redis()

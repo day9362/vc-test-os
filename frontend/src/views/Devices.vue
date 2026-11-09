@@ -8,7 +8,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
 import EChart from '@/components/EChart.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { api } from '@/api/http'
+import { api, idempotencyKey } from '@/api/http'
 import type { Alarm, Machine } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { useTokens } from '@/composables/useTokens'
@@ -89,8 +89,15 @@ async function loadMachines() {
 async function loadDetail() {
   const id = cur.value
   if (!id) return
+  alarms.value = []
+  plans.value = []
   sectionError.value = {}
-  const [alarmPage, historyPage, planPage, rc] = await Promise.all([
+  let alarmPage: { items: Alarm[] }
+  let historyPage: { items: PlanUse[] }
+  let planPage: { items: CompWrite[] }
+  let rc: { items: { machine_id: string; bias: number }[] }
+  try {
+    ;[alarmPage, historyPage, planPage, rc] = await Promise.all([
     api<{ items: Alarm[] }>(`/alarms?machine_id=${id}&limit=100`),
     api<{ items: PlanUse[] }>(`/machines/${id}/plan-history`),
     loadSection(id, 'history', () => api<{ items: CompWrite[] }>(`/machines/${id}/compensation/history`), { items: [] }),
@@ -121,6 +128,9 @@ async function loadDetail() {
   if (cur.value !== id) return
   comp.value = current.items.map((item) => ({ ...item }))
   savedComp.value = current.items.map((item) => ({ ...item }))
+  } catch (err) {
+    if (cur.value === id) sectionError.value.history = reasonOf(err)
+  }
 }
 
 watch(cur, () => { loadDetail() })
@@ -146,7 +156,7 @@ async function op(kind: 'power-on' | 'power-off' | 'maintenance' | 'reset') {
   if (!ok) return
   try {
     const body = kind === 'maintenance' ? JSON.stringify({ on: m.value.status !== 'MAINTENANCE' }) : undefined
-    await api(`/machines/${cur.value}/${kind}`, { method: 'POST', body, headers: { 'Idempotency-Key': crypto.randomUUID() } })
+    await api(`/machines/${cur.value}/${kind}`, { method: 'POST', body, headers: { 'Idempotency-Key': idempotencyKey() } })
     await loadMachines()
     app.toast({ kind: 'ok', title: `${cur.value} 已${text}` })
   } catch (err) {
@@ -205,7 +215,7 @@ async function writeComp() {
     await api(`/machines/${cur.value}/compensation`, {
       method: 'PUT',
       body: JSON.stringify({ mode: mode.value, compensation: comp.value }),
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
     })
     await loadDetail()
     app.toast({ kind: 'ok', title: '补偿已写入', desc: cur.value })

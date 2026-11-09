@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
+from app.service.settings.cluster_policy import cluster_base_url
 from app.core.errors import AppError
 from app.models.dto.machine import MachineOut, SlotCurveOut
 from app.models.orm.run import RunOrm
@@ -18,7 +18,7 @@ class MachineService:
 
     async def list_machines(self) -> list[MachineOut]:
         rows = await self.machines.list_with_slots()
-        if settings.cluster_base_url:
+        if cluster_base_url():
             fleet = fleet_machine_ids() or await refresh_fleet()
             if fleet:
                 allowed = set(fleet)

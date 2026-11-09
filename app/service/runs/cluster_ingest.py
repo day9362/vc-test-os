@@ -7,9 +7,9 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.core.config import settings
 from app.core.database import SessionLocal
-from app.service.settings.cluster_policy import request_timeout, sync_send
+from app.service.machines.hold import machine_held
+from app.service.settings.cluster_policy import cluster_base_url, cluster_token, request_timeout, sync_send
 from app.models.orm.run import RunOrm, RunSampleOrm
 
 _cached_fleet: list[str] = []
@@ -21,11 +21,11 @@ _sample_miss_at: dict[str, float] = {}
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    return {"Authorization": f"Bearer {cluster_token()}"} if cluster_token() else {}
 
 
 def _get(path: str) -> dict | list | None:
-    base = settings.cluster_base_url.rstrip("/")
+    base = cluster_base_url()
     if not base:
         return None
     res = sync_send("GET", f"{base}{path}", timeout=request_timeout(), headers=_headers())
@@ -35,7 +35,7 @@ def _get(path: str) -> dict | list | None:
 
 def _get_fleet(path: str) -> dict | list | None:
     """机台列表过滤用：不超过设置的超时，也不超过 5 秒，避免 Agent 预览被集群拖死。"""
-    base = settings.cluster_base_url.rstrip("/")
+    base = cluster_base_url()
     if not base:
         return None
     res = sync_send("GET", f"{base}{path}", timeout=min(request_timeout(), 5.0), headers=_headers())
@@ -62,7 +62,7 @@ def _parse_fleet(body: object) -> list[str]:
 
 async def refresh_fleet() -> list[str]:
     global _cached_fleet, _fleet_fail_at
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return []
     if _cached_fleet:
         return list(_cached_fleet)
@@ -146,9 +146,12 @@ def _apply_payload(row: RunOrm, payload: dict, *, fill_result: bool) -> None:
     row.serial_number = str(payload.get("serial_number") or row.serial_number or "")
     row.plan_id = str(payload.get("plan_id") or row.plan_id or "")
     row.plan_version = int(payload.get("plan_version") or row.plan_version or 0)
-    row.status = str(payload.get("status") or row.status or "COMPLETED")
-    row.passed = payload.get("passed") if "passed" in payload else row.passed
-    row.fail_items = list(payload.get("fail_items") or row.fail_items or [])
+    incoming = str(payload.get("status") or "")
+    keep_abort = row.status == "ABORTED" and machine_held(row.machine_id) and incoming in {"", "RUNNING"}
+    if not keep_abort:
+        row.status = incoming or row.status or "COMPLETED"
+        row.passed = payload.get("passed") if "passed" in payload else row.passed
+        row.fail_items = list(payload.get("fail_items") or row.fail_items or [])
     row.keep_result = True if payload.get("keep_result") is None else bool(payload["keep_result"])
     if rc is not None:
         row.rc = rc
@@ -187,7 +190,7 @@ def _parse_batch_ids(body: object) -> list[str]:
 
 
 async def refresh_batch_ids() -> list[str]:
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return []
     try:
         body = await asyncio.to_thread(_get, "/products/batches")
@@ -197,7 +200,7 @@ async def refresh_batch_ids() -> list[str]:
 
 
 async def ingest_run_list(session: AsyncSession) -> int:
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return 0
     fleet = await refresh_fleet()
     if not fleet:
@@ -288,7 +291,7 @@ async def _metrics_backfill_loop() -> None:
 
 
 async def fill_run_detail(session: AsyncSession, row: RunOrm) -> RunOrm:
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return row
     if row.result and row.rc is not None and row.dt01 is not None:
         return row
@@ -324,7 +327,7 @@ def _sample_points(body: object) -> list[dict]:
 
 async def sync_samples(session: AsyncSession) -> None:
     """按过程曲线的间隔拉取。正在测试的记录按已有时间增量追加，缺曲线的已结束记录补一份。"""
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return
     running = list((await session.execute(select(RunOrm).where(RunOrm.status == "RUNNING"))).scalars().all())
     seen = {row.run_id for row in running}
@@ -377,7 +380,7 @@ async def _fetch_sample_body(run_id: str, since: float, incremental: bool):
 
 
 async def fill_run_samples(session: AsyncSession, run_id: str) -> None:
-    if not settings.cluster_base_url:
+    if not cluster_base_url():
         return
     existing = (await session.execute(select(RunSampleOrm.id).where(RunSampleOrm.run_id == run_id).limit(1))).first()
     if existing:

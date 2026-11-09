@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.core.config import settings
+from app.service.settings.cluster_policy import cluster_base_url
 from app.core.errors import AppError
 from app.models.dto.stats import Agg5mOut, AnomalyTrendOut, KpiOut, KpiPrevOut, PipelineOut, PipelineStepOut, RcBiasItemOut, RcBiasOut
 from app.models.entity.stats import PipelineStep
@@ -132,7 +132,7 @@ class StatsService:
         return PipelineOut(**{key: PipelineStepOut(text=step.text, state=step.state) for key, step in steps.items()})
 
     async def _fleet_ids(self) -> list[str] | None:
-        if not settings.cluster_base_url:
+        if not cluster_base_url():
             return None
         return fleet_machine_ids() or await refresh_fleet() or None
 

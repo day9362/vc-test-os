@@ -1,9 +1,8 @@
 import httpx
 
-from app.core.config import settings
 from app.core.errors import AppError
 from app.service.machines.cluster import post_cluster
-from app.service.settings.cluster_policy import async_send, request_timeout
+from app.service.settings.cluster_policy import async_send, cluster_base_url, cluster_headers, request_timeout, using_sim
 
 
 def items(body: object, *keys: str) -> list[dict]:
@@ -20,10 +19,10 @@ def items(body: object, *keys: str) -> list[dict]:
 
 async def get_cluster(path: str) -> dict | list | None:
     """没配集群地址或集群返回 404 时返回 None。"""
-    base = settings.cluster_base_url.rstrip("/")
+    base = cluster_base_url()
     if not base:
         return None
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = cluster_headers()
     try:
         response = await async_send("GET", f"{base}{path}", timeout=request_timeout(), headers=headers)
     except httpx.TimeoutException as exc:
@@ -43,7 +42,7 @@ async def get_cluster(path: str) -> dict | list | None:
 
 
 def sim_mode() -> bool:
-    return "sim" in settings.cluster_base_url.lower()
+    return using_sim()
 
 
 async def post_production(path: str, body: dict) -> dict | None:

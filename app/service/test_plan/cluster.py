@@ -4,22 +4,21 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.core.config import settings
 from app.core.errors import AppError
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.test_plan_repo import TestPlanRepo
 from app.service.production.cluster import items
-from app.service.settings.cluster_policy import async_send, request_timeout
+from app.service.settings.cluster_policy import async_send, cluster_base_url, cluster_headers, request_timeout
 
 log = logging.getLogger(__name__)
 
 
 async def publish_cluster(payload: dict) -> dict | None:
-    base = settings.cluster_base_url.strip().rstrip("/")
+    base = cluster_base_url()
     if not base:
         return None
     url = f"{base}/plans" if base.endswith("/api") else f"{base}/api/plans"
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = cluster_headers()
     try:
         response = await async_send("POST", url, timeout=request_timeout(), headers=headers, json_body=payload)
     except httpx.TimeoutException as exc:
@@ -74,11 +73,11 @@ async def ingest_cluster_plans(session: AsyncSession, *, refresh: bool = False) 
 
 
 async def _get_plans() -> dict | list | None:
-    base = settings.cluster_base_url.strip().rstrip("/")
+    base = cluster_base_url()
     if not base:
         return None
     url = f"{base}/plans" if base.endswith("/api") else f"{base}/api/plans"
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = cluster_headers()
     try:
         response = await async_send("GET", url, timeout=request_timeout(), headers=headers)
     except httpx.TimeoutException as exc:

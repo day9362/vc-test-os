@@ -7,14 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.clock import now_ms
-from app.core.config import settings
 from app.core.errors import AppError
 from app.core.redis import redis_client
 from app.models.orm.alarm import AlarmOrm
 from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.run import Agg5mOrm, RunOrm
 from app.service.compensation.cluster import cluster_json
-from app.service.settings.cluster_policy import async_send, request_timeout
+from app.service.machines.hold import machine_held
+from app.service.settings.cluster_policy import async_send, cluster_base_url, cluster_headers, note_cluster_unavailable, request_timeout, sync_paused
 from app.service.overview.attribution import build_attribution
 from app.service.overview.hub import hub
 from app.service.overview.machine_service import MachineService
@@ -27,19 +27,25 @@ log = logging.getLogger(__name__)
 
 async def sync_cluster(session: AsyncSession) -> None:
     """定时任务：按机群状态的间隔拉取 /fleet。槽位和机台详情各自另有任务。"""
-    base = settings.cluster_base_url.rstrip("/")
-    if not base:
-        await _touch(session)
+    if sync_paused():
         return
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    base = cluster_base_url()
+    if not base:
+        return
+    headers = cluster_headers()
     try:
         fleet = await async_send("GET", f"{base}/fleet", timeout=request_timeout(), headers=headers)
+        if fleet.status_code == 503:
+            note_cluster_unavailable()
+            return
         fleet.raise_for_status()
         payload = fleet.json()
         machines = payload if isinstance(payload, list) else payload.get("machines") or payload.get("items") or []
         changed = []
         for item in machines:
             if not isinstance(item, dict) or "machine_id" not in item:
+                continue
+            if machine_held(str(item["machine_id"])):
                 continue
             row = await _upsert_machine(session, item)
             changed.append(row.machine_id)
@@ -59,16 +65,21 @@ async def _fleet_rows(session: AsyncSession) -> list[MachineOrm]:
 
 async def sync_slots(session: AsyncSession) -> None:
     """按槽位实时的间隔拉取每台在线机台的槽位。通信断开的机台跳过。"""
-    base = settings.cluster_base_url.rstrip("/")
+    if sync_paused():
+        return
+    base = cluster_base_url()
     if not base:
         return
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = cluster_headers()
     timeout = request_timeout(slot=True)
     machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
 
     async def fetch(machine_id: str):
         try:
             response = await async_send("GET", f"{base}/machines/{machine_id}/slots", timeout=timeout, headers=headers)
+            if response.status_code == 503:
+                note_cluster_unavailable()
+                return machine_id, None
             response.raise_for_status()
             body = response.json()
         except Exception as exc:
@@ -79,7 +90,7 @@ async def sync_slots(session: AsyncSession) -> None:
 
     fetched = await asyncio.gather(*(fetch(row.machine_id) for row in machines))
     for machine_id, slot_rows in fetched:
-        if slot_rows is None:
+        if slot_rows is None or machine_held(machine_id):
             continue
         await _replace_slots(session, machine_id, slot_rows)
         await hub.publish(
@@ -90,10 +101,12 @@ async def sync_slots(session: AsyncSession) -> None:
 
 async def sync_machine_details(session: AsyncSession) -> None:
     """按机台详情的间隔拉取配置、报警、室温和槽位数。"""
-    base = settings.cluster_base_url.rstrip("/")
+    if sync_paused():
+        return
+    base = cluster_base_url()
     if not base:
         return
-    headers = {"Authorization": f"Bearer {settings.cluster_token}"} if settings.cluster_token else {}
+    headers = cluster_headers()
     timeout = request_timeout()
     machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
     changed = []
@@ -101,6 +114,9 @@ async def sync_machine_details(session: AsyncSession) -> None:
     async def fetch(machine_id: str):
         try:
             response = await async_send("GET", f"{base}/machines/{machine_id}", timeout=timeout, headers=headers)
+            if response.status_code == 503:
+                note_cluster_unavailable()
+                return machine_id, None
             response.raise_for_status()
             payload = response.json() if response.content else {}
         except Exception as exc:
@@ -110,7 +126,7 @@ async def sync_machine_details(session: AsyncSession) -> None:
 
     fetched = await asyncio.gather(*(fetch(row.machine_id) for row in machines))
     for machine_id, payload in fetched:
-        if not payload:
+        if not payload or machine_held(machine_id):
             continue
         payload["machine_id"] = machine_id
         await _upsert_machine(session, payload)
@@ -123,6 +139,8 @@ async def sync_machine_details(session: AsyncSession) -> None:
 
 async def sync_calib(session: AsyncSession) -> None:
     """按补偿与漂移的间隔拉取每台在线机台，供设备配置页直接读。"""
+    if sync_paused():
+        return
     machines = [row for row in await _fleet_rows(session) if row.comm_status != "DISCONNECTED"]
     if not machines:
         return
@@ -318,12 +336,6 @@ def _open(session, keys, machine_id, slot_index, level, source, code, message) -
     )
     session.add(row)
     return [row]
-
-
-async def _touch(session: AsyncSession) -> None:
-    stamp = now_ms()
-    for machine in (await session.execute(select(MachineOrm))).scalars():
-        machine.last_sync_at = stamp
 
 
 async def _upsert_machine(session: AsyncSession, item: dict) -> MachineOrm:

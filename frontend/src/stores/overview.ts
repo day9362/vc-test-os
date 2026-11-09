@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { api, wsUrl } from '@/api/http'
+import { api, idempotencyKey, wsUrl } from '@/api/http'
 import type { Agg5m, Alarm, Machine, Slot } from '@/api/types'
 
 export interface MachineView extends Machine {
@@ -187,7 +187,7 @@ export const useOverviewStore = defineStore('overview', () => {
   async function ack(id: string) {
     const body = await api<{ alarm: Alarm }>(`/alarms/${id}/ack`, {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
     })
     applyAlarm(body.alarm)
     kpiRaw.value = { ...kpiRaw.value, open_alarms: alarms.value.filter((item) => !item.acked).length }
@@ -196,7 +196,7 @@ export const useOverviewStore = defineStore('overview', () => {
   async function unack(id: string) {
     const body = await api<{ alarm: Alarm }>(`/alarms/${id}/unack`, {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
     })
     applyAlarm(body.alarm)
     kpiRaw.value = { ...kpiRaw.value, open_alarms: alarms.value.filter((item) => !item.acked).length }

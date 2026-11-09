@@ -12,6 +12,7 @@ from app.models.orm.run import RunOrm
 from app.repo.audit_repo import AuditRepo
 from app.repo.machine_repo import MachineRepo
 from app.service.machines.cluster import post_cluster
+from app.service.machines.hold import hold_machine
 from app.service.overview.hub import hub
 from app.service.overview.machine_service import MachineService
 
@@ -42,6 +43,7 @@ class MachineCommandService:
         if cached:
             return MachineActionOut.model_validate(cached)
         machine, slots = await self._require_online(machine_id)
+        await self._stop_sampling_on_cluster(machine_id, slots)
         await post_cluster(f"/machines/{machine_id}/power-off", None)
         await self._abort_sampling(slots)
         machine.status = "OFFLINE"
@@ -55,6 +57,8 @@ class MachineCommandService:
         machine, slots = await self._require_online(machine_id)
         if not on and machine.status != "MAINTENANCE":
             raise AppError(409, "CONFLICT", f"{machine_id} 不在维修状态")
+        if on:
+            await self._stop_sampling_on_cluster(machine_id, slots)
         await post_cluster(f"/machines/{machine_id}/maintenance", {"on": on})
         if on:
             await self._abort_sampling(slots)
@@ -90,6 +94,11 @@ class MachineCommandService:
             raise AppError(503, "MACHINE_DISCONNECTED", f"{machine_id} 通信断开，未转发给集群")
         return machine, slots
 
+    async def _stop_sampling_on_cluster(self, machine_id: str, slots: list[SlotOrm]) -> None:
+        for slot in slots:
+            if slot.phase == "SAMPLING":
+                await post_cluster(f"/machines/{machine_id}/slots/{slot.index}/abort", None)
+
     async def _abort_sampling(self, slots: list[SlotOrm]) -> None:
         stamp = now_ms()
         for slot in slots:
@@ -110,6 +119,7 @@ class MachineCommandService:
         audit_id = self.audit.record(user.user_id, action, machine.machine_id, request, {"status": machine.status})
         await self.session.commit()
         body = MachineActionOut(audit_id=audit_id, machine_id=machine.machine_id, status=machine.status)
+        hold_machine(machine.machine_id)
         await self._publish(machine.machine_id)
         await self._store(key, body)
         return body

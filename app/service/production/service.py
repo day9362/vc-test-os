@@ -96,7 +96,11 @@ class ProductionService:
         if current is not None:
             raise AppError(409, "CONFLICT", "已有连续生产在进行")
         upstream = await post_production("/fleet/production/start", body.model_dump(exclude_none=True)) or {}
+        if not isinstance(upstream.get("accepted"), list):
+            raise AppError(502, "CLUSTER_ERROR", "集群没有返回接受的机台")
         accepted, skipped = _outcome(upstream, body.machine_ids, skip_reasons(body, context["machines"]))
+        if not accepted:
+            raise AppError(409, "CONFLICT", "没有机台接受这次连续生产", {"skipped": [item.model_dump() for item in skipped]})
         batch_id = _batch_id(upstream, body)
         if not batch_id:
             raise AppError(502, "CLUSTER_ERROR", "集群没有返回 batch_id")
@@ -302,16 +306,8 @@ def _outcome(data: dict | None, requested: list[str], local_skips: list[tuple[st
         if isinstance(item, dict) and item.get("machine_id"):
             skipped.append(SkippedOut(machine_id=str(item["machine_id"]), reason=str(item.get("reason") or "被跳过")))
     accepted_raw = data.get("accepted")
-    if isinstance(accepted_raw, list):
-        accepted = [str(item) for item in accepted_raw]
-    else:
-        accepted = []
-    if not skipped:
+    accepted = [str(item) for item in accepted_raw] if isinstance(accepted_raw, list) else []
+    if not skipped and isinstance(accepted_raw, list):
         skipped_ids = set(requested) - set(accepted)
-        if accepted_raw is None:
-            skipped_ids = set(reasons)
         skipped = [SkippedOut(machine_id=machine_id, reason=reasons.get(machine_id, "被跳过")) for machine_id in requested if machine_id in skipped_ids]
-    if not isinstance(accepted_raw, list):
-        skipped_ids = {item.machine_id for item in skipped}
-        accepted = [machine_id for machine_id in requested if machine_id not in skipped_ids]
     return accepted, skipped

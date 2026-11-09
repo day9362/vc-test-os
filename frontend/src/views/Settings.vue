@@ -6,7 +6,7 @@ import {
 } from 'lucide-vue-next'
 import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
-import { api } from '@/api/http'
+import { api, idempotencyKey } from '@/api/http'
 import type { FaultInfo } from '@/api/types'
 import { useSettingsStore } from '@/stores/settings'
 import { useAppStore } from '@/stores/app'
@@ -165,18 +165,17 @@ function jobText(key: string) {
 }
 
 async function setSpeed(speed: number) {
-  d.value.sim.speed = speed
-  if (s.saved.source !== 'sim') return
+  if (d.value.source !== 'sim') return
   try {
     await api('/sim/clock', {
       method: 'PUT',
       body: JSON.stringify({ speed }),
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
     })
-    s.commitSpeed(speed)
+    d.value.sim.speed = speed
+    if (s.saved.source === 'sim') s.commitSpeed(speed)
     await loadAudit()
   } catch (err) {
-    d.value.sim.speed = s.saved.sim.speed
     app.toast({ kind: 'danger', title: '仿真倍率没有改成', desc: err instanceof Error ? err.message : '' })
   }
 }
@@ -194,13 +193,13 @@ async function inject(kind: 'scenario' | 'fault') {
       await api(`/sim/scenarios/${scenario.value}/apply`, {
         method: 'POST',
         body: JSON.stringify({ machine_id: scenarioTarget.value }),
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey() },
       })
     } else {
       await api('/sim/faults', {
         method: 'POST',
         body: JSON.stringify({ machine_id: scenarioTarget.value, kind: fault.value }),
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey() },
       })
     }
     app.toast({ kind: 'warn', title: `已注入 ${what}`, desc: `${scenarioTarget.value} · 可在设备配置页查看效果` })
@@ -360,7 +359,7 @@ onBeforeRouteLeave(async () => {
             <div class="field">
               <label>仿真倍率 <span class="mono fs-xs muted">PUT /api/fleet/clock</span></label>
               <div class="seg">
-                <button v-for="v in SPEEDS" :key="v" :aria-pressed="d.sim.speed === v" @click="setSpeed(v)">×{{ v }}</button>
+                <button v-for="v in SPEEDS" :key="v" :disabled="d.source !== 'sim'" :aria-pressed="d.sim.speed === v" @click="setSpeed(v)">×{{ v }}</button>
               </div>
               <span class="hint">180 s 的方案在 ×10 下约 18 s 完成</span>
             </div>

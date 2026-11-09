@@ -8,7 +8,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import EChart from '@/components/EChart.vue'
-import { api, apiDownload, saveBlob, wsUrl } from '@/api/http'
+import { api, apiDownload, idempotencyKey, saveBlob, wsUrl } from '@/api/http'
 import { useAppStore } from '@/stores/app'
 import { useSettingsStore } from '@/stores/settings'
 import { useTokens } from '@/composables/useTokens'
@@ -171,7 +171,7 @@ async function submit() {
   try {
     const result = await api<StartOut>('/production/start', {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify(body.value),
     })
     open.value = false
@@ -200,7 +200,7 @@ async function stop(b: BatchStat) {
   try {
     await api('/production/stop', {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify({ batch_id: b.batch_id }),
     })
     app.toast({ kind: 'warn', title: '已停止连续生产', desc: b.batch_id })
@@ -266,12 +266,12 @@ const gt = ref<GroundTruth | null>(null)
 const gtHint = ref('')
 const detailVerdict = computed(() => {
   const row = detail.value
-  if (!row) return 'fail'
+  if (!row) return 'pending'
   if (row.passed === true) return 'pass'
-  if (row.passed === false) return 'fail'
-  if ((row.fail_items || []).length) return 'fail'
-  return row.status === 'COMPLETED' ? 'pass' : 'fail'
+  if (row.passed === false || (row.fail_items || []).length) return 'fail'
+  return 'pending'
 })
+const verdictText = computed(() => ({ pass: '合格', fail: '不合格', pending: '未判定' })[detailVerdict.value])
 const failItemSet = computed(() => new Set((detail.value?.fail_items || []).map((item) => item.toLowerCase())))
 function isFailDelta(key: string) {
   const name = key.toLowerCase()
@@ -715,7 +715,7 @@ onBeforeUnmount(() => {
             <section v-if="detail">
               <h4>判定结果</h4>
               <div class="json">
-                <div class="fw-6" :class="detailVerdict === 'pass' ? 't-ok' : 't-danger'">测试结果：{{ detailVerdict }}</div>
+                <div class="fw-6" :class="detailVerdict === 'pass' ? 't-ok' : detailVerdict === 'fail' ? 't-danger' : 'muted'">测试结果：{{ verdictText }}</div>
                 <div v-if="detailVerdict === 'fail' && failItems.length && !deltaRows.some((row) => row.fail)" class="t-danger fw-6">{{ failItems.join(', ') }}</div>
                 <div v-for="row in deltaRows" :key="row.key" :class="{ 't-danger fw-6': row.fail }">{{ row.key }}: {{ row.value }}</div>
               </div>

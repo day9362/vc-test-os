@@ -6,8 +6,10 @@ from app.models.orm.machine import MachineOrm, SlotOrm
 from app.models.orm.run import RunOrm
 from app.service.machines.cluster import post_cluster
 from app.service.machines.command_service import MachineCommandService
+from app.service.machines.hold import hold_machine
 
-FREE_PHASES = {"IDLE", "COMPLETED"}
+LOADABLE = {"IDLE", "COMPLETED"}
+STARTABLE = {"IDLE", "COMPLETED", "LOADED"}
 
 
 class SlotCommandService(MachineCommandService):
@@ -20,10 +22,11 @@ class SlotCommandService(MachineCommandService):
             raise AppError(422, "VALIDATION_ERROR", "参数校验失败", {"issues": [{"field": "serial_number", "message": "serial_number 不能为空"}]})
         machine, slot = await self._slot(machine_id, index)
         self._require_ready(machine)
-        if slot.phase not in FREE_PHASES:
+        if slot.phase not in LOADABLE:
             raise AppError(409, "CONFLICT", f"{machine_id} 的 {index} 号槽正在使用，不能装板")
         await post_cluster(f"/machines/{machine_id}/slots/{index}/load", {"serial_number": serial})
         slot.serial_number = serial
+        slot.phase = "LOADED"
         slot.last_error = ""
         slot.progress = 0
         return await self._done(machine, slot, user, idempotency_key, "slot.load", {"serial_number": serial})
@@ -34,12 +37,14 @@ class SlotCommandService(MachineCommandService):
             return SlotActionOut.model_validate(cached)
         machine, slot = await self._slot(machine_id, index)
         self._require_ready(machine)
-        if slot.phase not in FREE_PHASES:
+        if slot.phase not in STARTABLE:
             raise AppError(409, "CONFLICT", f"{machine_id} 的 {index} 号槽正在测试")
         if not slot.serial_number:
             raise AppError(409, "CONFLICT", f"{machine_id} 的 {index} 号槽还没装板")
-        upstream = await post_cluster(f"/machines/{machine_id}/slots/{index}/test", None) or {}
-        run_id = str(upstream.get("run_id") or f"LOCAL-{machine_id}-{index}-{now_ms()}")
+        upstream = await post_cluster(f"/machines/{machine_id}/slots/{index}/test", None)
+        run_id = str(upstream.get("run_id") or "")
+        if not run_id:
+            raise AppError(502, "CLUSTER_ERROR", "集群没有返回 run_id")
         if await self.session.get(RunOrm, run_id) is None:
             self.session.add(RunOrm(
                 run_id=run_id,
@@ -66,7 +71,7 @@ class SlotCommandService(MachineCommandService):
         if cached:
             return SlotActionOut.model_validate(cached)
         machine, slot = await self._slot(machine_id, index)
-        if slot.phase in FREE_PHASES:
+        if slot.phase in LOADABLE or slot.phase == "LOADED":
             raise AppError(409, "CONFLICT", f"{machine_id} 的 {index} 号槽没有在测试")
         await post_cluster(f"/machines/{machine_id}/slots/{index}/abort", None)
         if slot.run_id:
@@ -120,6 +125,7 @@ class SlotCommandService(MachineCommandService):
             serial_number=slot.serial_number,
             run_id=slot.run_id,
         )
+        hold_machine(machine.machine_id)
         await self._publish(machine.machine_id)
         await self._store(key, body)
         return body

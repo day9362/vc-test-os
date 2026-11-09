@@ -18,7 +18,6 @@ from app.models.dto.compensation import (
     SuggestionOut,
 )
 from app.models.entity.user import UserEntity
-from app.core.config import settings
 from app.core.redis import redis_client
 from app.repo.audit_repo import AuditRepo
 from app.repo.compensation_repo import CompensationRepo
@@ -27,6 +26,7 @@ from app.repo.run_repo import RunRepo
 from app.service.compensation.bias import estimate_channel_bias, is_golden
 from app.service.overview.rules import load_alarm_rules
 from app.service.compensation.cluster import cluster_json
+from app.service.settings.cluster_policy import cluster_base_url
 from app.service.runs.cluster_ingest import fleet_machine_ids, refresh_fleet
 from app.service.runs.run_service import RunService
 
@@ -120,7 +120,7 @@ class CompensationService:
 
     async def drifts(self, machine_id: str) -> DriftListOut:
         await self._require(machine_id)
-        if not settings.cluster_base_url:
+        if not cluster_base_url():
             return DriftListOut(items=[], supported=False)
         cached = await self._sync_cache(f"sync:drift:{machine_id}")
         payload = cached if cached is not None else await cluster_json("GET", f"/machines/{machine_id}/drifts")

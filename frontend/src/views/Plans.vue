@@ -6,7 +6,7 @@ import {
 } from 'lucide-vue-next'
 import PageHeader from '@/components/PageHeader.vue'
 import Panel from '@/components/Panel.vue'
-import { api } from '@/api/http'
+import { api, idempotencyKey } from '@/api/http'
 import type { LimitRule, Plan, PlanMeta } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { CAPABILITY, LIMIT_ITEMS } from '@/mock/cluster'
@@ -147,7 +147,7 @@ async function saveDraft(id: string) {
   try {
     const res = await api<DraftOut>(`/plan-drafts/${id}`, {
       method: 'PUT',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify(payload),
     })
     if (curId.value !== id) return
@@ -246,7 +246,7 @@ async function publish() {
     if (!check.ok) { app.toast({ kind: 'danger', title: '方案未通过校验' }); return }
     const res = await api<PublishOut>('/plans', {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify({ ...payload, plan_id: curId.value }),
     })
     await reload(res.plan_id)
@@ -263,7 +263,7 @@ async function duplicate() {
   try {
     const res = await api<DraftOut>('/plan-drafts', {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify(payload),
     })
     plans.value.unshift(res.plan)
@@ -278,7 +278,7 @@ async function removeDraft() {
   if (!(await app.confirm({ title: '删除草稿', desc: `「${cur.value.name}」只保存在本地，删除后无法恢复。`, danger: true, confirmText: '删除' }))) return
   const id = curId.value
   try {
-    await api(`/plan-drafts/${id}`, { method: 'DELETE', headers: { 'Idempotency-Key': crypto.randomUUID() } })
+    await api(`/plan-drafts/${id}`, { method: 'DELETE', headers: { 'Idempotency-Key': idempotencyKey() } })
     plans.value = plans.value.filter((p) => p.plan_id !== id)
     delete meta.value[id]
     curId.value = plans.value[0]?.plan_id ?? ''
@@ -299,7 +299,7 @@ async function draft() {
   try {
     const res = await api<FromTextOut>('/plan-drafts/from-text', {
       method: 'POST',
-      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      headers: { 'Idempotency-Key': idempotencyKey() },
       body: JSON.stringify({ text: nl.value.trim() }),
     })
     plans.value.unshift(res.plan)
