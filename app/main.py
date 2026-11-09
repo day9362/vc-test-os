@@ -26,13 +26,15 @@ async def lifespan(_: FastAPI):
     await ensure_user_tenant_column()
     await ensure_figure_preset_column()
     await seed()
+    payload: dict = {}
     async with SessionLocal() as session:
         row = await SettingsRepo(session).get_or_create()
         await session.commit()
-        apply_job_intervals(row.payload or {})
-        apply_cluster_policy(row.payload or {})
-        apply_endpoint(row.payload or {})
+        payload = row.payload or {}
+        apply_cluster_policy(payload)
+        apply_endpoint(payload)
     start_scheduler()
+    apply_job_intervals(payload)
     yield
     stop_scheduler()
     await close_redis()
