@@ -111,6 +111,7 @@ class ReportExportOut(BaseModel):
 
 class ReportSummaryIn(BaseModel):
     batch_ids: list[str]
+    mode: str = "single"
 
 
 class ReportUsageOut(BaseModel):
@@ -122,6 +123,7 @@ class ReportNarrativeOut(BaseModel):
     lines: list[str]
     model: str
     usage: ReportUsageOut
+    looked: str = ""
 
 
 class LimitItemOut(BaseModel):
@@ -176,6 +178,19 @@ class AnalysisSliceOut(BaseModel):
     fail_groups: list[FailGroupOut] = []
 
 
+class SlotCensusOut(BaseModel):
+    slot: str
+    tested: int
+    passed: int
+
+
+class BatchCensusOut(BaseModel):
+    batch: str
+    tested: int
+    passed: int
+    slots: list[SlotCensusOut] = []
+
+
 class AnalysisOut(BaseModel):
     note: str = ""
     tested: int = 0
@@ -188,6 +203,7 @@ class AnalysisOut(BaseModel):
     batches: list[AnalysisSliceOut] = []
     machines: list[AnalysisSliceOut] = []
     slots: list[AnalysisSliceOut] = []
+    census: list[BatchCensusOut] = []
     process: list[ProcessNoteOut] = []
 
 
@@ -213,6 +229,22 @@ class FigureSummaryOut(BaseModel):
     notes: list[str] = []
 
 
+class FigureQuestionOut(BaseModel):
+    text: str
+    options: list[str] = []
+
+
+class FigureTableOut(BaseModel):
+    name: str = "所用数据"
+    columns: list[str] = []
+    rows: list[list[str]] = []
+
+
+class FigureReplyIn(BaseModel):
+    text: str = ""
+    picks: list[str] = []
+
+
 class FigureOut(BaseModel):
     figure_id: str
     status: str
@@ -224,6 +256,9 @@ class FigureOut(BaseModel):
     code: str
     results: list[list[str]]
     summary: FigureSummaryOut | None = None
+    table: FigureTableOut | None = None
+    questions: list[FigureQuestionOut] = []
+    note: str = ""
     usage: ReportUsageOut
     error: str | None = None
     step: str = ""

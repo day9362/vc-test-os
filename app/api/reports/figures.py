@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_user
 from app.core.database import SessionLocal, get_session
 from app.core.errors import AppError
-from app.models.dto.report import FigureCreatedOut, FigureIn, FigureOut
+from app.models.dto.report import FigureCreatedOut, FigureIn, FigureOut, FigureReplyIn
 from app.models.entity.user import UserEntity
 from app.models.orm.report_figure import ReportFigureOrm
 from app.service.reports.figures import FigureService, execute_figure
@@ -27,6 +27,19 @@ async def create_figure(
     created = await FigureService(session).create(body.batch_ids, body.prompt, user, body.preset)
     background.add_task(execute_figure, created.figure_id, user.name)
     return created
+
+
+@router.post("/reports/figures/{figure_id}/reply", response_model=FigureCreatedOut)
+async def reply_figure(
+    figure_id: str,
+    body: FigureReplyIn,
+    background: BackgroundTasks,
+    user: UserEntity = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FigureCreatedOut:
+    await FigureService(session).answer(figure_id, body.text, body.picks)
+    background.add_task(execute_figure, figure_id, user.name)
+    return FigureCreatedOut(figure_id=figure_id)
 
 
 @router.get("/reports/figures", response_model=list[FigureOut])
@@ -78,7 +91,7 @@ async def figure_events(figure_id: str, _: object = Depends(current_user)) -> St
 
 async def _events(figure_id: str):
     seen = ""
-    for _ in range(400):
+    for _ in range(3600):
         async with SessionLocal() as session:
             row = await session.get(ReportFigureOrm, figure_id)
         if row is None:
@@ -87,7 +100,7 @@ async def _events(figure_id: str):
         if row.step and row.step != seen:
             seen = row.step
             yield _event({"step": row.step})
-        if row.status in {"done", "failed"}:
+        if row.status in {"done", "failed", "asking"}:
             yield _event({"step": "done"})
             return
         await asyncio.sleep(0.5)

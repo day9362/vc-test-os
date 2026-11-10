@@ -5,13 +5,19 @@ from app.service.reports.chart_spec import compile_stored
 from app.service.reports.figure_scope import asked_group, prepare_records, uses_fixed_charts
 from app.service.reports.pdf import chart_bars
 from app.models.orm.run import RunOrm
-from app.service.reports.figures import limit_deltas
+from app.service.reports.figures import _needs_process, limit_deltas
 from app.service.reports.presets import run_preset, test_rows
 from app.service.reports.sandbox import reject_code, sanitize_option
 from app.service.reports.stats import student_t_sf
 
 
 class FigureSandboxTests(unittest.TestCase):
+    def test_result_chart_does_not_fetch_process_curves(self) -> None:
+        self.assertFalse(_needs_process([], False))
+        self.assertFalse(_needs_process(["Temp_T1-T4"], False))
+        self.assertTrue(_needs_process(["temp_t1"], False))
+        self.assertTrue(_needs_process([], True))
+
     def test_rejects_os_and_network_imports(self) -> None:
         self.assertIn("os", reject_code("import os\ndef analyze(runs):\n    return {}"))
         self.assertIn("subprocess", reject_code("import subprocess\ndef analyze(runs):\n    return {}"))

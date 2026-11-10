@@ -73,6 +73,11 @@ def test_rows(records: list[dict], tests: object) -> list[list[str]]:
 
 def _grouped(records: list[dict], group: str, show_ambient: bool = False) -> dict:
     axis = {"slot": "槽位", "machine": "机台", "batch": "批次"}.get(group, "槽位")
+    return _done(f"按{axis}的卡限项", _group_panels(records, group, show_ambient))
+
+
+def _group_panels(records: list[dict], group: str, show_ambient: bool) -> list[dict]:
+    axis = {"slot": "槽位", "machine": "机台", "batch": "批次"}.get(group, "槽位")
     panels = []
     names = [name for name in _item_names(records, limited_only=True) if show_ambient or name != "室温"]
     for name in names:
@@ -89,10 +94,11 @@ def _grouped(records: list[dict], group: str, show_ambient: bool = False) -> dic
         if not grouped:
             continue
         labels = sorted(grouped, key=_place_key)
-        panel = _box(name, axis, labels, [grouped[label] for label in labels], chosen)
+        scope = {"slot": "分机台槽", "machine": "分机台", "batch": "分批次"}.get(group, "分机台槽")
+        panel = _box(name, axis, labels, [grouped[label] for label in labels], chosen, scope)
         panel["y_name"] = "W" if name == "power_w" else "℃"
         panels.append(panel)
-    return _done(f"按{axis}的卡限项", panels)
+    return panels
 
 
 def _group_label(point: dict, group: str) -> str:
@@ -130,23 +136,23 @@ def _slot_boxes(records: list[dict]) -> dict:
         if not grouped:
             grouped["本批"] = [point["value"] for point in chosen]
         labels = sorted(grouped, key=_place_key)
-        panels.append(_box(name, "槽位", labels, [grouped[label] for label in labels], chosen))
-    return _done("按槽位的温差", panels)
+        panels.append(_box(name, "槽位", labels, [grouped[label] for label in labels], chosen, "分机台槽"))
+    return _done("温差 · 分机台槽", panels)
 
 
 def _distribution(records: list[dict]) -> dict:
     names = _item_names(records, delta_only=True)
     grouped = {name: [point["value"] for point in _chart_points(records) if point["item"] == name] for name in names}
     chosen = [point for point in _chart_points(records) if point["item"] in grouped]
-    panel = _box("温差分布", "项", names, [grouped[name] for name in names], chosen)
-    return _done("温差分布", [panel])
+    panel = _box("温差分布", "项", names, [grouped[name] for name in names], chosen, "整批")
+    return _done("温差分布 · 整批", [panel])
 
 
 def _over_counts(records: list[dict]) -> dict:
     panel = _over_bar(records)
     if panel is None:
         raise AppError(400, "BAD_REQUEST", "这些批次没有卡限温差")
-    return _done("超限片数", [panel])
+    return _done("超限片数 · 整批", [panel])
 
 
 def _trend(records: list[dict]) -> dict:
@@ -158,15 +164,17 @@ def _trend(records: list[dict]) -> dict:
             continue
         labels = [f"第{index}片" for index, _ in enumerate(chosen, start=1)]
         panels.append({
-            "title": name,
+            "title": f"{name} · 整批",
             "type": "line",
+            "scope": "整批",
             "x_name": "测试顺序",
             "y_name": "℃",
+            "value_name": "单片",
             "categories": labels,
-            "series": [{"name": name, "data": [round(point["value"], 3) for point in chosen]}],
+            "series": [{"name": name, "data": [round(point["value"], 2) for point in chosen]}],
             "marks": _limit_marks(chosen),
         })
-    return _done("温差走势", panels)
+    return _done("温差走势 · 整批", panels)
 
 
 def _heatmap(records: list[dict]) -> dict:
@@ -180,7 +188,7 @@ def _heatmap(records: list[dict]) -> dict:
             panels.append(panel)
     if not panels:
         raise AppError(400, "BAD_REQUEST", "没有机台或槽位")
-    return {"title": "机台与槽位", "panels": panels, "results": []}
+    return {"title": "温差均值 · 分机台槽", "panels": panels, "results": []}
 
 
 def _one_heatmap(records: list[dict], item: str) -> dict | None:
@@ -197,14 +205,18 @@ def _one_heatmap(records: list[dict], item: str) -> dict | None:
         for x_index, slot in enumerate(slots):
             values = grouped.get((machine, slot))
             if values:
-                cells.append([x_index, y_index, round(statistics.fmean(values), 3)])
+                cells.append([x_index, y_index, round(statistics.fmean(values), 2)])
     if not cells:
         return None
     return {
-        "title": item,
+        "title": f"{item} · 分机台槽",
         "type": "heatmap",
+        "scope": "分机台槽",
         "x_name": "槽位",
-        "y_name": item,
+        "y_name": "机台",
+        "series_name": item,
+        "value_name": "均值",
+        "unit": "℃",
         "x_labels": [f"槽{slot}" for slot in slots],
         "y_labels": machines,
         "data": cells,
@@ -229,8 +241,10 @@ def _compare(records: list[dict]) -> dict:
             if label:
                 grouped[label].append(point["value"])
         labels = sorted(grouped, key=_place_key)
-        panels.append(_box(name, axis, labels, [grouped[label] for label in labels], chosen))
-    return _done("同项对比", panels)
+        scope = "分批次" if len(batches) > 1 else "分机台槽" if len(places) > 1 else "分机台" if len({point["machine_id"] for point in points if point["machine_id"]}) > 1 else "整批"
+        panels.append(_box(name, axis, labels, [grouped[label] for label in labels], chosen, scope))
+    scope = panels[0].get("scope", "整批") if panels else "整批"
+    return _done(f"同项对比 · {scope}", panels)
 
 
 def _ambient_panel(records: list[dict]) -> dict | None:
@@ -252,14 +266,16 @@ def _ambient_panel(records: list[dict]) -> dict | None:
     if len(labels) == 1 and len(grouped[labels[0]]) >= 2:
         values = grouped[labels[0]]
         return {
-            "title": "室温",
+            "title": "室温 · 整批",
             "type": "line",
+            "scope": "整批",
             "x_name": "测试顺序",
             "y_name": "℃",
+            "value_name": "单片",
             "categories": [f"第{index}片" for index in range(1, len(values) + 1)],
-            "series": [{"name": "室温", "data": [round(value, 3) for value in values]}],
+            "series": [{"name": "室温", "data": [round(value, 2) for value in values]}],
         }
-    return _box("室温", "槽位", labels, [grouped[label] for label in labels], [])
+    return _box("室温", "槽位", labels, [grouped[label] for label in labels], [], "分机台槽")
 
 
 def _done(title: str, panels: list[dict]) -> dict:
@@ -268,14 +284,16 @@ def _done(title: str, panels: list[dict]) -> dict:
     return {"title": title, "panels": panels, "results": []}
 
 
-def _box(title: str, x_name: str, labels: list[str], groups: list[list[float]], chosen: list[dict]) -> dict:
+def _box(title: str, x_name: str, labels: list[str], groups: list[list[float]], chosen: list[dict], scope: str = "") -> dict:
+    shown = f"{title} · {scope}" if scope and scope not in title else title
     return {
-        "title": title,
+        "title": shown,
         "type": "boxplot",
+        "scope": scope,
         "x_name": x_name,
         "y_name": "℃",
         "categories": labels,
-        "series": [{"name": title, "data": [five_number(values) for values in groups]}],
+        "series": [{"name": title, "data": [[round(float(number), 2) for number in five_number(values)] for values in groups]}],
         "marks": _limit_marks(chosen),
     }
 
@@ -291,10 +309,12 @@ def _over_bar(records: list[dict]) -> dict | None:
         highs.append(sum(1 for point in chosen if _above(point)))
         lows.append(sum(1 for point in chosen if _below(point)))
     return {
-        "title": "超限片数",
+        "title": "超限片数 · 整批",
         "type": "bar",
+        "scope": "整批",
         "x_name": "项",
         "y_name": "片",
+        "value_name": "片数",
         "categories": names,
         "series": [{"name": "超上限", "data": highs}, {"name": "超下限", "data": lows}],
     }
@@ -324,12 +344,14 @@ def _slot_mean_bar(records: list[dict], name: str) -> dict | None:
         return None
     labels = sorted(grouped, key=_place_key)
     return {
-        "title": f"{name} 槽位均值",
+        "title": f"{name} · 分机台槽",
         "type": "bar",
+        "scope": "分机台槽",
         "x_name": "槽位",
         "y_name": "℃",
+        "value_name": "均值",
         "categories": labels,
-        "series": [{"name": name, "data": [round(statistics.fmean(grouped[label]), 3) for label in labels]}],
+        "series": [{"name": name, "data": [round(statistics.fmean(grouped[label]), 2) for label in labels]}],
         "marks": _limit_marks(chosen),
     }
 
