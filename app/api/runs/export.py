@@ -24,7 +24,7 @@ async def export_production(
 
 @router.get("/export/production.csv")
 async def export_production_csv(
-    batch_id: str | None = None,
+    batch_id: list[str] = Query(default_factory=list),
     start: int | None = Query(default=None, alias="from"),
     end: int | None = Query(default=None, alias="to"),
     group: str = "day",
