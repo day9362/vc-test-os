@@ -450,7 +450,9 @@ async function downloadFile(path: string, title: string) {
 }
 
 function exportCsv() {
-  return downloadFile('/export/production.csv?group=day', '已导出结果表')
+  if (!selected.value.length) return downloadFile('/export/production.csv?group=day', '已导出结果表')
+  const query = selected.value.map((id) => `batch_id=${encodeURIComponent(id)}`).join('&')
+  return downloadFile(`/export/production.csv?${query}`, '已导出结果表')
 }
 
 function exportPickedRaw() {
@@ -528,7 +530,7 @@ onBeforeUnmount(() => {
   <div class="page">
     <p v-if="loadError" class="fs-sm" style="color: var(--c-danger); margin: 0">{{ loadError }}</p>
     <PageHeader title="测试执行" desc="下发方案并开始连续生产 · 跟踪批次进度 · 历史批次与报告">
-      <button class="btn" :disabled="exporting" @click="exportCsv"><Download :size="16" />导出结果表</button>
+      <button class="btn" :disabled="exporting" @click="exportCsv" v-tip="selected.length ? '只导出勾选的批次' : '未勾选时导出全部结果，按天分文件'"><Download :size="16" />导出结果表{{ selected.length ? `（${selected.length}）` : '' }}</button>
       <button class="btn btn-primary" @click="open = true"><Play :size="16" />新建测试任务</button>
     </PageHeader>
 

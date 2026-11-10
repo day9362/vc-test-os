@@ -72,6 +72,20 @@ def render_raw(points: list[dict[str, Any]]) -> str:
     return _write(columns, points)
 
 
+def choose_final_sample(samples: list[dict[str, Any]], duration_s: float | None) -> dict[str, Any] | None:
+    """取测试方案时长处的采样。时长 180 秒就用 180 秒，时长 10 秒就用 10 秒。"""
+    points = [item for item in samples if isinstance(item, dict) and isinstance(item.get("t_s"), (int, float))]
+    if not points:
+        return None
+    if duration_s is None or float(duration_s) <= 0:
+        return max(points, key=lambda item: float(item["t_s"]))
+    limit = float(duration_s) + 0.05
+    within = [item for item in points if float(item["t_s"]) <= limit]
+    if within:
+        return max(within, key=lambda item: float(item["t_s"]))
+    return min(points, key=lambda item: float(item["t_s"]))
+
+
 def points_from_body(body: object) -> list[dict[str, Any]]:
     items: list = []
     if isinstance(body, dict):

@@ -15,10 +15,10 @@ from app.models.orm.production import BatchRecordOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.run_repo import RunRepo
 from app.repo.settings_repo import SettingsRepo
-from app.service.runs.cluster_ingest import _get, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
+from app.service.runs.cluster_ingest import _apply_payload, _get, _result_t, _sample_rows, fill_run_detail, fill_run_samples, fleet_machine_ids, ingest_run_list, refresh_fleet
 from app.service.settings.cluster_policy import cluster_base_url, cluster_token, request_timeout, sync_send
 from app.service.runs.mapping import run_detail_out, run_entity, run_out
-from app.service.runs.result_csv import build_result_export, export_date, points_from_body, raw_filename, render_raw, unique_names
+from app.service.runs.result_csv import build_result_export, choose_final_sample, export_date, points_from_body, raw_filename, render_raw, unique_names
 
 log = logging.getLogger(__name__)
 _last_ingest = 0.0
@@ -159,12 +159,23 @@ class RunService:
             return
         loop.create_task(_ingest_in_background())
 
-    async def export_csv(self, batch_id: str | None, start: int | None, end: int | None, group: str = "day") -> tuple[bytes, str, str]:
+    async def export_csv(self, batch_ids: list[str] | None, start: int | None, end: int | None, group: str = "day") -> tuple[bytes, str, str]:
         if group not in {"day", "batch"}:
             raise AppError(400, "BAD_REQUEST", "group 只能是 day 或 batch")
         await self._ensure_fleet()
         self._schedule_ingest()
-        rows = await self.runs.list_for_export(batch_id, start, end, bool(cluster_base_url()), fleet_machine_ids() or None)
+        ids = [item for item in dict.fromkeys(batch_ids or []) if item]
+        fleet = fleet_machine_ids() or None
+        seeded = bool(cluster_base_url())
+        if len(ids) <= 1:
+            rows = await self.runs.list_for_export(ids[0] if ids else None, start, end, seeded, fleet)
+        else:
+            rows = []
+            for batch_id in ids:
+                rows.extend(await self.runs.list_for_export(batch_id, start, end, seeded, fleet))
+        if len(ids) == 1:
+            group = "batch"
+        await self._settle_rows(rows)
         return build_result_export(rows, await self._batch_models(), await self._plan_durations(), group)
 
     async def export_products(self, run_ids: list[str]) -> tuple[bytes, str, str]:
@@ -190,6 +201,7 @@ class RunService:
                 continue
             seen.add(key)
             chosen.append(latest.get(row.serial_number, row) if row.serial_number else row)
+        await self._settle_rows(chosen)
         return build_result_export(chosen, await self._batch_models(), await self._plan_durations(), "products")
 
     async def export_raw(self, run_ids: list[str], batch_id: str | None) -> tuple[bytes, str, str]:
@@ -221,6 +233,39 @@ class RunService:
             for name, text in files:
                 archive.writestr(name, text.encode("utf-8-sig"))
         return buffer.getvalue(), "application/zip", f"rawdata_{export_date()}.zip"
+
+    async def _settle_rows(self, rows: list) -> None:
+        durations = await self._plan_durations()
+        pending = []
+        for row in rows:
+            if getattr(row, "status", "") != "COMPLETED":
+                continue
+            duration = durations.get((str(row.plan_id or ""), int(row.plan_version or 0)))
+            if not duration:
+                continue
+            current = _result_t(row.result if isinstance(row.result, dict) else None)
+            if current is not None and current >= float(duration) - 1:
+                continue
+            pending.append((row, float(duration)))
+        if not pending or not cluster_base_url():
+            return
+        for start in range(0, len(pending), 6):
+            chunk = pending[start : start + 6]
+            loaded = await asyncio.gather(*(self._sample_rows(row.run_id) for row, _duration in chunk))
+            for (row, duration), samples in zip(chunk, loaded):
+                chosen = choose_final_sample(samples or [], duration)
+                chosen_t = _result_t(chosen)
+                if chosen is None or chosen_t is None or chosen_t < duration - 1:
+                    continue
+                _apply_payload(row, {"result": chosen, "status": row.status}, fill_result=True)
+        await self.session.commit()
+
+    async def _sample_rows(self, run_id: str) -> list[dict]:
+        try:
+            body = await asyncio.to_thread(_get, f"/runs/{run_id}/samples")
+        except Exception:
+            return []
+        return _sample_rows(body)
 
     async def _raw_points(self, run_id: str) -> list[dict]:
         if cluster_base_url():
@@ -255,6 +300,7 @@ class RunService:
         columns = columns_for(limits)
         await self._ensure_fleet()
         rows = await self.runs.list_for_export(batch_id, None, None, bool(cluster_base_url()), fleet_machine_ids() or None)
+        await self._settle_rows(rows)
         counts = {item.batch_id: item.count for item in await ProductionRepo(self.session).batches()}
         data = []
         for row in rows:
