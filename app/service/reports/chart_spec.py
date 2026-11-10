@@ -3,7 +3,7 @@ import re
 from app.core.errors import AppError
 from app.service.reports.sandbox import sanitize_option
 
-_TYPES = {"boxplot", "scatter", "bar", "line", "heatmap", "pareto"}
+_TYPES = {"boxplot", "scatter", "bar", "line", "heatmap", "pareto", "spindle"}
 _MAX_PANELS = 16
 _MAX_CATEGORIES = 24
 _MAX_SERIES = 6
@@ -66,16 +66,21 @@ def _compile_panels(raw: object) -> tuple[list[dict], str]:
 def compile_panel(spec: dict) -> dict:
     kind = str(spec.get("type") or "").strip().lower()
     if kind not in _TYPES:
-        raise AppError(502, "AGENT_FAILED", "图表类型只能是 boxplot、scatter、bar、line、heatmap、pareto")
+        raise AppError(502, "AGENT_FAILED", "图表类型只能是 boxplot、scatter、bar、line、heatmap、pareto、spindle")
     if kind == "heatmap":
-        return _heatmap(spec)
-    if kind == "scatter":
-        return _scatter(spec)
-    if kind == "pareto":
-        return _pareto(spec)
-    if kind == "boxplot":
-        return _boxes(spec)
-    return _categories(spec, kind)
+        option = _heatmap(spec)
+    elif kind == "scatter":
+        option = _scatter(spec)
+    elif kind == "pareto":
+        option = _pareto(spec)
+    elif kind == "boxplot":
+        option = _boxes(spec)
+    elif kind == "spindle":
+        option = _spindle(spec)
+    else:
+        option = _categories(spec, kind)
+    option["tip"] = _tip(spec, kind)
+    return option
 
 
 def _boxes(spec: dict) -> dict:
@@ -84,7 +89,8 @@ def _boxes(spec: dict) -> dict:
     for item in _series_of(spec):
         rows = []
         for raw in item["data"][: len(categories)]:
-            rows.append(_box_row(raw))
+            parsed = _box_row(raw)
+            rows.append("-" if parsed is None else parsed)
         if len(rows) != len(categories):
             continue
         series.append({"type": "boxplot", "name": item["name"], "data": rows})
@@ -95,17 +101,55 @@ def _boxes(spec: dict) -> dict:
     return option
 
 
+def _spindle(spec: dict) -> dict:
+    categories = _categories_of(spec)
+    series = []
+    for item in _series_of(spec):
+        rows = []
+        for raw in item["data"][: len(categories)]:
+            parsed = _spindle_row(raw)
+            if parsed is None:
+                rows = []
+                break
+            rows.append(parsed)
+        if len(rows) != len(categories):
+            continue
+        series.append({"type": "candlestick", "name": item["name"], "data": rows})
+    if not categories or not series:
+        raise AppError(502, "AGENT_FAILED", "纺锤图缺少最小、均值、最大")
+    option = _axes(spec, categories, series)
+    _marks(option, spec)
+    return option
+
+
+def _spindle_row(raw: object) -> list[float] | None:
+    if not isinstance(raw, list) or len(raw) < 3:
+        return None
+    low, mean, high = (_finite(raw[0]), _finite(raw[1]), _finite(raw[2]))
+    if low is None or mean is None or high is None:
+        return None
+    return [_shown(mean), _shown(mean), _shown(low), _shown(high)]
+
+
 def _categories(spec: dict, kind: str) -> dict:
     categories = _categories_of(spec)
     series = []
     for item in _series_of(spec):
-        values = [_finite(value) for value in item["data"][: len(categories)]]
+        values = [_shown(number) if (number := _finite(raw)) is not None else None for raw in item["data"][: len(categories)]]
         if len(values) != len(categories) or any(value is None for value in values):
             continue
         series.append({"type": kind, "name": item["name"], "data": values})
     if not categories or not series:
         raise AppError(502, "AGENT_FAILED", "分类图缺少数据")
     option = _axes(spec, categories, series)
+    if len(categories) > 8 and kind in {"bar", "line"}:
+        option = {
+            "yAxis": {"type": "category", "data": categories, "name": _text(spec.get("x_name"), 20)},
+            "xAxis": {"type": "value", "name": _text(spec.get("y_name"), 20), "scale": True},
+            "series": series,
+        }
+        _marks(option, spec, "xAxis")
+        return option
     _marks(option, spec)
     return option
 
@@ -137,8 +181,8 @@ def _pareto(spec: dict) -> dict:
             {"type": "value", "name": "累计 %", "min": 0, "max": 100},
         ],
         "series": [
-            {"type": "bar", "name": "次数", "data": [value for _, value in pairs]},
-            {"type": "line", "name": "累计 %", "yAxisIndex": 1, "data": cumulative},
+            {"type": "bar", "name": "次数", "unit": "片", "role": "片数", "data": [value for _, value in pairs]},
+            {"type": "line", "name": "累计", "unit": "%", "role": "累计", "yAxisIndex": 1, "data": cumulative},
         ],
     }
     return option
@@ -190,7 +234,7 @@ def _heatmap(spec: dict) -> dict:
         "xAxis": {"type": "category", "data": x_labels, "name": _text(spec.get("x_name"), 20)},
         "yAxis": {"type": "category", "data": y_labels, "name": _text(spec.get("y_name"), 20)},
         "visualMap": {"min": low, "max": high, "calculable": False, "orient": "horizontal", "left": "center", "bottom": 0},
-        "series": [{"type": "heatmap", "data": cells, "name": _text(spec.get("y_name"), 20) or "值"}],
+        "series": [{"type": "heatmap", "data": cells, "name": _text(spec.get("series_name") or spec.get("title"), 24) or "值"}],
     }
 
 
@@ -207,7 +251,34 @@ def _axes(spec: dict, categories: list[str], series: list[dict]) -> dict:
     }
 
 
-def _marks(option: dict, spec: dict) -> None:
+_UNITS = {"℃", "W", "片", "g", "s", "%", "℃/W"}
+
+
+def _tip(spec: dict, kind: str) -> dict:
+    unit = _text(spec.get("unit"), 8)
+    if not unit:
+        named = _text(spec.get("y_name"), 8)
+        unit = named if named in _UNITS else ""
+    role = _text(spec.get("value_name"), 12)
+    if kind == "heatmap":
+        tip = {"unit": unit or "℃", "role": role or "均值"}
+    elif kind == "boxplot":
+        tip = {"unit": unit, "role": role or "箱线", "parts": ["最小值", "下四分位", "中位数", "上四分位", "最大值"]}
+    elif kind == "spindle":
+        tip = {"unit": unit or "℃", "role": role or "范围", "parts": ["最小值", "均值", "最大值"]}
+    elif kind == "scatter":
+        tip = {"unit": unit, "role": role or "单片"}
+    elif kind == "pareto":
+        tip = {"unit": "片", "role": role or "片数"}
+    else:
+        tip = {"unit": unit, "role": role}
+    scope = _text(spec.get("scope"), 12)
+    if scope:
+        tip["scope"] = scope
+    return tip
+
+
+def _marks(option: dict, spec: dict, axis: str = "yAxis") -> None:
     raw = spec.get("marks")
     if not isinstance(raw, list) or not option["series"]:
         return
@@ -218,7 +289,7 @@ def _marks(option: dict, spec: dict) -> None:
         value = _finite(item.get("y"))
         if value is None:
             continue
-        lines.append({"name": _text(item.get("name"), 20) or "参考线", "yAxis": value})
+        lines.append({"name": _text(item.get("name"), 20) or "参考线", axis: value})
     if lines:
         option["series"][0]["markLine"] = {"symbol": "none", "data": lines}
 
@@ -242,13 +313,15 @@ def _series_of(spec: dict) -> list[dict]:
     return series
 
 
-def _box_row(raw: object) -> list[float]:
+def _box_row(raw: object) -> list[float] | None:
+    if raw is None:
+        return None
     if not isinstance(raw, list) or len(raw) < 5:
         raise AppError(502, "AGENT_FAILED", "箱线需要 min、q1、median、q3、max")
     values = [_finite(item) for item in raw[:5]]
     if any(value is None for value in values):
         raise AppError(502, "AGENT_FAILED", "箱线里有非数字")
-    return [float(value) for value in values if value is not None]
+    return [_shown(float(value)) for value in values if value is not None]
 
 
 def _point(raw: object) -> list[float | str] | None:
@@ -358,11 +431,15 @@ def _cell(raw: object, x_count: int, y_count: int) -> list[float] | None:
     value = _finite(raw[2])
     if value is None or raw[0] < 0 or raw[1] < 0 or raw[0] >= x_count or raw[1] >= y_count:
         return None
-    return [raw[0], raw[1], value]
+    return [raw[0], raw[1], _shown(value)]
 
 
 def _label_list(raw: object) -> list[object]:
     return raw if isinstance(raw, list) else []
+
+
+def _shown(value: float) -> float:
+    return round(value, 2)
 
 
 def _finite(value: object) -> float | None:

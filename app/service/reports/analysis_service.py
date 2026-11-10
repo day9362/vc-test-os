@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
-from app.models.dto.report import AnalysisOut, AnalysisSliceOut, FailGroupOut, FailParetoOut, LimitItemOut, ProcessNoteOut
+from app.models.dto.report import AnalysisOut, AnalysisSliceOut, BatchCensusOut, FailGroupOut, FailParetoOut, LimitItemOut, ProcessNoteOut, SlotCensusOut
 from app.models.orm.run import RunOrm, RunSampleOrm
 from app.models.orm.test_plan import TestPlanOrm
 from app.repo.run_repo import RunRepo
@@ -21,6 +21,10 @@ class AnalysisService:
         self.runs = RunRepo(session)
 
     async def build(self, batch_ids: list[str]) -> AnalysisOut:
+        analysis, _rows = await self.load(batch_ids)
+        return analysis
+
+    async def load(self, batch_ids: list[str]) -> tuple[AnalysisOut, list[dict]]:
         ids = [item.strip() for item in batch_ids if item and item.strip()]
         if not ids:
             raise AppError(400, "BAD_REQUEST", "batch_ids 不能为空")
@@ -32,15 +36,15 @@ class AnalysisService:
         finished = sum(1 for row in rows if row.status == "COMPLETED" and row.keep_result)
         if not observations and aborted == 0 and discarded == 0:
             if finished and not limits:
-                return _empty("这些批次已经测完，但这份方案的上下限没有取到")
+                return _empty("这些批次已经测完，但这份方案的上下限没有取到"), []
             if finished:
-                return _empty("这些批次已经测完，卡限项在结果里没有对应读数")
-            return _empty("这些批次还没有测完的片子")
+                return _empty("这些批次已经测完，卡限项在结果里没有对应读数"), []
+            return _empty("这些批次还没有测完的片子"), []
         if not limits:
-            return _empty("这些批次的方案没有上下限，没有可分析的项")
+            return _empty("这些批次的方案没有上下限，没有可分析的项"), []
         notes = await self._process(observations)
         overall = _slice("全部", observations, aborted, discarded, invalid_by_item)
-        return AnalysisOut(
+        analysis = AnalysisOut(
             tested=len({row["run_id"] for row in observations}),
             aborted=aborted,
             discarded=discarded,
@@ -51,8 +55,10 @@ class AnalysisService:
             batches=_groups(observations, "batch_id", tallies["batch"]),
             machines=_groups(observations, "machine_id", tallies["machine"]),
             slots=_groups(observations, "slot_name", tallies["slot"]),
+            census=_census(observations),
             process=notes,
         )
+        return analysis, observations
 
     async def _limits(self, rows: list[RunOrm]) -> dict[tuple[str, int], dict[str, tuple[str, float | None, float | None]]]:
         plan_ids = {row.plan_id for row in rows if row.plan_id}
@@ -154,6 +160,7 @@ def _observations(rows: list[RunOrm], limits: dict):
                 "value": float(raw),
                 "low": low,
                 "high": high,
+                "passed": row.passed is True,
             })
     return observations, invalid, aborted, discarded, tallies
 
@@ -204,6 +211,41 @@ def _groups(rows: list[dict], field: str, tally: dict) -> list[AnalysisSliceOut]
         aborted, discarded = tally.get(name, (0, 0))
         slices.append(_slice(name, grouped.get(name, []), aborted, discarded, {}))
     return slices
+
+
+def _slot_key(name: str) -> tuple[str, int]:
+    machine, _, index = name.partition("#")
+    try:
+        return machine, int(index)
+    except ValueError:
+        return machine, 0
+
+
+def _census(rows: list[dict]) -> list[BatchCensusOut]:
+    wafers: dict[str, tuple[str, str, bool]] = {}
+    for row in rows:
+        run_id = str(row.get("run_id") or "")
+        if run_id and run_id not in wafers:
+            wafers[run_id] = (str(row.get("batch_id") or ""), str(row.get("slot_name") or ""), row.get("passed") is True)
+    grouped: dict[str, dict[str, list[int]]] = {}
+    order: list[str] = []
+    for batch, slot, passed in wafers.values():
+        if batch not in grouped:
+            grouped[batch] = {}
+            order.append(batch)
+        cell = grouped[batch].setdefault(slot, [0, 0])
+        cell[0] += 1
+        if passed:
+            cell[1] += 1
+    found = []
+    for batch in order:
+        slots = [
+            SlotCensusOut(slot=name, tested=counts[0], passed=counts[1])
+            for name, counts in sorted(grouped[batch].items(), key=lambda item: _slot_key(item[0]))
+            if name
+        ]
+        found.append(BatchCensusOut(batch=batch, tested=sum(item.tested for item in slots), passed=sum(item.passed for item in slots), slots=slots))
+    return found
 
 
 def _rank(items: list[LimitItemOut]) -> list[FailParetoOut]:
