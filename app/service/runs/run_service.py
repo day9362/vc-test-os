@@ -160,12 +160,22 @@ class RunService:
             return
         loop.create_task(_ingest_in_background())
 
-    async def export_csv(self, batch_id: str | None, start: int | None, end: int | None, group: str = "day") -> tuple[bytes, str, str]:
+    async def export_csv(self, batch_ids: list[str] | None, start: int | None, end: int | None, group: str = "day") -> tuple[bytes, str, str]:
         if group not in {"day", "batch"}:
             raise AppError(400, "BAD_REQUEST", "group 只能是 day 或 batch")
         await self._ensure_fleet()
         self._schedule_ingest()
-        rows = await self.runs.list_for_export(batch_id, start, end, bool(settings.cluster_base_url), fleet_machine_ids() or None)
+        ids = [item for item in dict.fromkeys(batch_ids or []) if item]
+        fleet = fleet_machine_ids() or None
+        seeded = bool(settings.cluster_base_url)
+        if len(ids) <= 1:
+            rows = await self.runs.list_for_export(ids[0] if ids else None, start, end, seeded, fleet)
+        else:
+            rows = []
+            for batch_id in ids:
+                rows.extend(await self.runs.list_for_export(batch_id, start, end, seeded, fleet))
+        if len(ids) == 1:
+            group = "batch"
         await self._settle_rows(rows)
         return build_result_export(rows, await self._batch_models(), await self._plan_durations(), group)
 
