@@ -10,17 +10,17 @@ import pandas as pd
 def main() -> None:
     work = Path(os.environ.get("WORK_DIR", "/work"))
     out = Path(os.environ.get("OUT_DIR", "/out"))
-    runs = pd.read_json(work / "runs.json", orient="records")
-    fails = _fails(work)
+    runs = _frame(work, "results.json", "runs.json")
+    samples = _frame(work, "samples.json")
     code = (work / "code.py").read_text(encoding="utf-8")
     namespace: dict = {"pd": pd}
     try:
         exec(compile(code, "analysis.py", "exec"), namespace)
         analyze = namespace.get("analyze")
         if not callable(analyze):
-            raise RuntimeError("代码里需要定义 analyze(runs)")
-        if _accepts_fails(analyze):
-            result = analyze(runs, fails)
+            raise RuntimeError("代码里需要定义 analyze(results, samples)")
+        if _accepts_samples(analyze):
+            result = analyze(runs, samples)
         else:
             result = analyze(runs)
         if not isinstance(result, dict):
@@ -31,18 +31,16 @@ def main() -> None:
         raise SystemExit(1)
 
 
-def _fails(work: Path) -> pd.DataFrame:
-    path = work / "fails.json"
-    columns = ["batch_id", "machine_id", "slot_index", "serial_number", "item"]
+def _frame(work: Path, name: str, fallback: str = "") -> pd.DataFrame:
+    path = work / name
+    if not path.exists() and fallback:
+        path = work / fallback
     if not path.exists():
-        return pd.DataFrame(columns=columns)
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, list) or not raw:
-        return pd.DataFrame(columns=columns)
-    return pd.DataFrame(raw)
+        return pd.DataFrame()
+    return pd.read_json(path, orient="records")
 
 
-def _accepts_fails(analyze: object) -> bool:
+def _accepts_samples(analyze: object) -> bool:
     parameters = list(inspect.signature(analyze).parameters.values())
     if any(item.kind == inspect.Parameter.VAR_POSITIONAL for item in parameters):
         return True

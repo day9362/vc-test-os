@@ -211,7 +211,7 @@ class ReportService:
         if not key:
             return [], []
         wanted = [item.strip() for item in figure_ids if item and item.strip()]
-        query = select(ReportFigureOrm).where(ReportFigureOrm.batch_key == key, ReportFigureOrm.status == "done").order_by(ReportFigureOrm.created_at)
+        query = select(ReportFigureOrm).where(ReportFigureOrm.batch_key == key, ReportFigureOrm.status == "done").order_by(ReportFigureOrm.created_at.desc())
         if wanted:
             query = query.where(ReportFigureOrm.figure_id.in_(wanted))
         rows = (await self.session.scalars(query)).all()

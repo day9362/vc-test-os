@@ -229,6 +229,22 @@ class FigureSummaryOut(BaseModel):
     notes: list[str] = []
 
 
+class FigureQuestionOut(BaseModel):
+    text: str
+    options: list[str] = []
+
+
+class FigureTableOut(BaseModel):
+    name: str = "所用数据"
+    columns: list[str] = []
+    rows: list[list[str]] = []
+
+
+class FigureReplyIn(BaseModel):
+    text: str = ""
+    picks: list[str] = []
+
+
 class FigureOut(BaseModel):
     figure_id: str
     status: str
@@ -240,6 +256,9 @@ class FigureOut(BaseModel):
     code: str
     results: list[list[str]]
     summary: FigureSummaryOut | None = None
+    table: FigureTableOut | None = None
+    questions: list[FigureQuestionOut] = []
+    note: str = ""
     usage: ReportUsageOut
     error: str | None = None
     step: str = ""
